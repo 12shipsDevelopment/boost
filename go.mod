@@ -4,7 +4,7 @@ go 1.16
 
 replace github.com/filecoin-project/filecoin-ffi => ./extern/filecoin-ffi
 
-// replace github.com/filecoin-project/lotus => ../lotus
+replace github.com/filecoin-project/lotus => ../octopus
 
 require (
 	contrib.go.opencensus.io/exporter/prometheus v0.4.0
@@ -39,6 +39,7 @@ require (
 	github.com/filecoin-project/specs-actors/v2 v2.3.6
 	github.com/filecoin-project/specs-storage v0.2.2
 	github.com/gbrlsnchs/jwt/v3 v3.0.1
+	github.com/go-redis/redis/v8 v8.10.0
 	github.com/golang/mock v1.6.0
 	github.com/google/uuid v1.3.0
 	github.com/gorilla/mux v1.7.4
@@ -102,3 +103,7 @@ require (
 	golang.org/x/xerrors v0.0.0-20220411194840-2f41105eb62f
 	gopkg.in/cheggaaa/pb.v1 v1.0.28
 )
+
+replace github.com/filecoin-project/dagstore v0.5.2 => ../dagstore
+
+replace github.com/filecoin-project/go-fil-markets v1.20.2-0.20220509100709-5b96975b1577 => ../go-fil-markets2

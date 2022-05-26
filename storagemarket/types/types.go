@@ -103,7 +103,7 @@ type DealResponse struct {
 }
 
 type PieceAdder interface {
-	AddPiece(ctx context.Context, size abi.UnpaddedPieceSize, r io.Reader, d api.PieceDealInfo) (abi.SectorNumber, abi.PaddedPieceSize, error)
+	AddPiece(ctx context.Context, size abi.UnpaddedPieceSize, r io.Reader, d api.PieceDealInfo, p string) (abi.SectorNumber, abi.PaddedPieceSize, error)
 }
 
 type DealPublisher interface {

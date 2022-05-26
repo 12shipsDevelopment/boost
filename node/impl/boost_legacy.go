@@ -90,7 +90,7 @@ func (sm *BoostAPI) MarketImportDealData(ctx context.Context, propCid cid.Cid, p
 	}
 	defer fi.Close() //nolint:errcheck
 
-	return sm.LegacyStorageProvider.ImportDataForDeal(ctx, propCid, fi)
+	return sm.LegacyStorageProvider.ImportDataForDeal(ctx, propCid, fi, "")
 }
 
 func (sm *BoostAPI) MarketSetRetrievalAsk(ctx context.Context, rask *retrievalmarket.Ask) error {

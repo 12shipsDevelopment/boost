@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/go-redis/redis/v8"
 	"time"
 
 	"github.com/filecoin-project/boost/api"
@@ -504,6 +505,9 @@ func ConfigBoost(c interface{}) Option {
 		Override(new(lotus_dtypes.ProviderTransport), lotus_modules.NewProviderTransport),
 		Override(new(lotus_dtypes.ProviderDataTransfer), modules.NewProviderDataTransfer),
 		Override(new(*storedask.StoredAsk), lotus_modules.NewStorageAsk),
+
+		Override(new(sectorblocks.AllSectorBuilders), lotus_modules.AllSectorBuilders),
+		Override(new(*redis.ClusterClient), lotus_modules.RedisClient()),
 
 		Override(new(lotus_storagemarket.StorageProviderNode), lotus_storageadapter.NewProviderNodeAdapter(&cfg.LotusFees, &cfg.LotusDealmaking)),
 		Override(new(lotus_storagemarket.StorageProvider), lotus_modules.StorageProvider),
