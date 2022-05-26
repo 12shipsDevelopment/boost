@@ -48,7 +48,7 @@ func DsKeyToDealID(key datastore.Key) (uint64, error) {
 }
 
 type SectorBuilder interface {
-	SectorAddPieceToAny(ctx context.Context, size abi.UnpaddedPieceSize, r storage.Data, d api.PieceDealInfo) (api.SectorOffset, error)
+	SectorAddPieceToAny(ctx context.Context, size abi.UnpaddedPieceSize, r storage.Data, d api.PieceDealInfo, p string) (api.SectorOffset, error)
 	SectorsStatus(ctx context.Context, sid abi.SectorNumber, showOnChainInfo bool) (api.SectorInfo, error)
 }
 
@@ -101,7 +101,7 @@ func (st *SectorBlocks) writeRef(ctx context.Context, dealID abi.DealID, sectorI
 }
 
 func (st *SectorBlocks) AddPiece(ctx context.Context, size abi.UnpaddedPieceSize, r io.Reader, d api.PieceDealInfo) (abi.SectorNumber, abi.PaddedPieceSize, error) {
-	so, err := st.SectorBuilder.SectorAddPieceToAny(ctx, size, r, d)
+	so, err := st.SectorBuilder.SectorAddPieceToAny(ctx, size, r, d, "")
 	if err != nil {
 		return 0, 0, err
 	}
