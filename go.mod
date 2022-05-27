@@ -106,4 +106,4 @@ require (
 
 replace github.com/filecoin-project/dagstore v0.5.2 => ../dagstore
 
-replace github.com/filecoin-project/go-fil-markets v1.20.2-0.20220509100709-5b96975b1577 => ../go-fil-markets2
+replace github.com/filecoin-project/go-fil-markets v1.20.2-0.20220509100709-5b96975b1577 => ../go-fil-markets
