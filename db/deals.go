@@ -9,7 +9,7 @@ import (
 	"github.com/filecoin-project/boost/db/fielddef"
 	"github.com/filecoin-project/boost/storagemarket/types"
 	"github.com/filecoin-project/boost/storagemarket/types/dealcheckpoints"
-	"github.com/filecoin-project/go-state-types/builtin/v8/market"
+	"github.com/filecoin-project/go-state-types/builtin/v9/market"
 	"github.com/google/uuid"
 	"github.com/graph-gophers/graphql-go"
 	"github.com/ipfs/go-cid"
@@ -78,6 +78,7 @@ func newDealAccessor(db *sql.DB, deal *types.ProviderDealState) *dealAccessor {
 			"CheckpointAt":          &fielddef.FieldDef{F: &deal.CheckpointAt},
 			"Error":                 &fielddef.FieldDef{F: &deal.Err},
 			"Retry":                 &fielddef.FieldDef{F: &deal.Retry},
+
 			// Needed so the deal can be looked up by signed proposal cid
 			"SignedProposalCID": &fielddef.SignedPropFieldDef{Prop: deal.ClientDealProposal},
 		},
@@ -210,6 +211,14 @@ func (d *DealsDB) ByPublishCID(ctx context.Context, publishCid string) ([]*types
 	}
 
 	return deals, nil
+}
+
+func (d *DealsDB) ByPieceCID(ctx context.Context, pieceCid cid.Cid) ([]*types.ProviderDealState, error) {
+	return d.list(ctx, 0, 0, "PieceCID=?", pieceCid.String())
+}
+
+func (d *DealsDB) ByRootPayloadCID(ctx context.Context, payloadCid cid.Cid) ([]*types.ProviderDealState, error) {
+	return d.list(ctx, 0, 0, "DealDataRoot=?", payloadCid.String())
 }
 
 func (d *DealsDB) BySignedProposalCID(ctx context.Context, proposalCid cid.Cid) (*types.ProviderDealState, error) {

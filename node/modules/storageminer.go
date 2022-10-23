@@ -8,6 +8,10 @@ import (
 	"path"
 	"time"
 
+	brm "github.com/filecoin-project/boost/retrievalmarket/lib"
+	provider "github.com/filecoin-project/index-provider"
+	"github.com/filecoin-project/index-provider/metadata"
+
 	"github.com/filecoin-project/boost/build"
 	"github.com/filecoin-project/boost/db"
 	"github.com/filecoin-project/boost/fundmanager"
@@ -20,17 +24,24 @@ import (
 	"github.com/filecoin-project/boost/storagemarket"
 	"github.com/filecoin-project/boost/storagemarket/logs"
 	"github.com/filecoin-project/boost/storagemarket/lp2pimpl"
+	"github.com/filecoin-project/boost/storagemarket/types"
+	"github.com/filecoin-project/boost/tracing"
 	"github.com/filecoin-project/boost/transport/httptransport"
+	"github.com/filecoin-project/dagstore"
+	"github.com/filecoin-project/dagstore/indexbs"
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-fil-markets/retrievalmarket"
 	"github.com/filecoin-project/go-fil-markets/shared"
 	lotus_storagemarket "github.com/filecoin-project/go-fil-markets/storagemarket"
+	storageimpl "github.com/filecoin-project/go-fil-markets/storagemarket/impl"
+	"github.com/filecoin-project/go-fil-markets/storagemarket/impl/storedask"
 	"github.com/filecoin-project/go-state-types/crypto"
 	"github.com/filecoin-project/lotus/api/v1api"
 	ctypes "github.com/filecoin-project/lotus/chain/types"
 	"github.com/filecoin-project/lotus/journal"
 	"github.com/filecoin-project/lotus/lib/sigs"
-	"github.com/filecoin-project/lotus/markets/dagstore"
+	mktsdagstore "github.com/filecoin-project/lotus/markets/dagstore"
+	"github.com/filecoin-project/lotus/markets/idxprov"
 	"github.com/filecoin-project/lotus/markets/storageadapter"
 	"github.com/filecoin-project/lotus/node/modules"
 	lotus_dtypes "github.com/filecoin-project/lotus/node/modules/dtypes"
@@ -39,7 +50,7 @@ import (
 	lotus_repo "github.com/filecoin-project/lotus/node/repo"
 	"github.com/filecoin-project/lotus/storage/sectorblocks"
 	"github.com/ipfs/go-cid"
-	"github.com/libp2p/go-libp2p-core/host"
+	"github.com/libp2p/go-libp2p/core/host"
 	"go.uber.org/fx"
 	"go.uber.org/multierr"
 )
@@ -284,7 +295,9 @@ func StorageNetworkName(ctx helpers.MetricsCtx, a v1api.FullNode) (dtypes.Networ
 }
 
 func NewBoostDB(r lotus_repo.LockedRepo) (*sql.DB, error) {
-	dbPath := path.Join(r.Path(), "boost.db")
+	// fixes error "database is locked", caused by concurrent access from deal goroutines to a single sqlite3 db connection
+	// see: https://github.com/mattn/go-sqlite3#:~:text=Error%3A%20database%20is%20locked
+	dbPath := path.Join(r.Path(), "boost.db?cache=shared")
 	return db.SqlDB(dbPath)
 }
 
@@ -293,7 +306,9 @@ type LogSqlDB struct {
 }
 
 func NewLogsSqlDB(r repo.LockedRepo) (*LogSqlDB, error) {
-	dbPath := path.Join(r.Path(), "boost.logs.db")
+	// fixes error "database is locked", caused by concurrent access from deal goroutines to a single sqlite3 db connection
+	// see: https://github.com/mattn/go-sqlite3#:~:text=Error%3A%20database%20is%20locked
+	dbPath := path.Join(r.Path(), "boost.logs.db?cache=shared")
 	d, err := db.SqlDB(dbPath)
 	if err != nil {
 		return nil, err
@@ -323,8 +338,8 @@ func HandleLegacyDeals(mctx helpers.MetricsCtx, lc fx.Lifecycle, host host.Host,
 	return nil
 }
 
-func HandleBoostDeals(lc fx.Lifecycle, h host.Host, prov *storagemarket.Provider, a v1api.FullNode, legacySP lotus_storagemarket.StorageProvider, idxProv *indexprovider.Wrapper, plDB *db.ProposalLogsDB) {
-	lp2pnet := lp2pimpl.NewDealProvider(h, prov, a, plDB)
+func HandleBoostDeals(lc fx.Lifecycle, h host.Host, prov *storagemarket.Provider, a v1api.FullNode, legacySP lotus_storagemarket.StorageProvider, idxProv *indexprovider.Wrapper, plDB *db.ProposalLogsDB, spApi sealingpipeline.API) {
+	lp2pnet := lp2pimpl.NewDealProvider(h, prov, a, plDB, spApi)
 
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
@@ -387,23 +402,79 @@ func NewChainDealManager(a v1api.FullNode) *storagemarket.ChainDealManager {
 	return storagemarket.NewChainDealManager(a, cdmCfg)
 }
 
-func NewStorageMarketProvider(provAddr address.Address, cfg *config.Boost) func(lc fx.Lifecycle, h host.Host, a v1api.FullNode,
-	sqldb *sql.DB, dealsDB *db.DealsDB, fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager,
-	dp *storageadapter.DealPublisher, secb *sectorblocks.SectorBlocks, sps sealingpipeline.API, df dtypes.StorageDealFilter, logsSqlDB *LogSqlDB, logsDB *db.LogsDB,
-	dagst *dagstore.Wrapper, ps lotus_dtypes.ProviderPieceStore, ip *indexprovider.Wrapper, lp lotus_storagemarket.StorageProvider,
-	cdm *storagemarket.ChainDealManager) (*storagemarket.Provider, error) {
+// NewLegacyStorageProvider wraps lotus's storage provider function but additionally sets up the metadata announcement
+// for legacy deals based off of Boost's configured protocols
+func NewLegacyStorageProvider(cfg *config.Boost) func(minerAddress lotus_dtypes.MinerAddress,
+	storedAsk *storedask.StoredAsk,
+	h host.Host, ds lotus_dtypes.MetadataDS,
+	r repo.LockedRepo,
+	pieceStore lotus_dtypes.ProviderPieceStore,
+	indexer provider.Interface,
+	dataTransfer lotus_dtypes.ProviderDataTransfer,
+	spn lotus_storagemarket.StorageProviderNode,
+	df lotus_dtypes.StorageDealFilter,
+	dsw *mktsdagstore.Wrapper,
+	meshCreator idxprov.MeshCreator,
+) (lotus_storagemarket.StorageProvider, error) {
+	return func(minerAddress lotus_dtypes.MinerAddress,
+		storedAsk *storedask.StoredAsk,
+		h host.Host, ds lotus_dtypes.MetadataDS,
+		r repo.LockedRepo,
+		pieceStore lotus_dtypes.ProviderPieceStore,
+		indexer provider.Interface,
+		dataTransfer lotus_dtypes.ProviderDataTransfer,
+		spn lotus_storagemarket.StorageProviderNode,
+		df lotus_dtypes.StorageDealFilter,
+		dsw *mktsdagstore.Wrapper,
+		meshCreator idxprov.MeshCreator,
+	) (lotus_storagemarket.StorageProvider, error) {
+		prov, err := modules.StorageProvider(minerAddress, storedAsk, h, ds, r, pieceStore, indexer, dataTransfer, spn, df, dsw, meshCreator)
+		if err != nil {
+			return prov, err
+		}
+		p := prov.(*storageimpl.Provider)
+		p.Configure(storageimpl.CustomMetadataGenerator(func(deal lotus_storagemarket.MinerDeal) metadata.Metadata {
+
+			// Announce deal to network Indexer
+			protocols := []metadata.Protocol{
+				&metadata.GraphsyncFilecoinV1{
+					PieceCID:      deal.Proposal.PieceCID,
+					FastRetrieval: deal.FastRetrieval,
+					VerifiedDeal:  deal.Proposal.VerifiedDeal,
+				},
+			}
+			if cfg.Dealmaking.BitswapPeerID != "" {
+				protocols = append(protocols, metadata.Bitswap{})
+			}
+
+			return metadata.New(protocols...)
+
+		}))
+		return p, nil
+	}
+}
+
+func NewStorageMarketProvider(provAddr address.Address, cfg *config.Boost) func(lc fx.Lifecycle, h host.Host, a v1api.FullNode, sqldb *sql.DB, dealsDB *db.DealsDB, fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager, dp *storageadapter.DealPublisher, secb *sectorblocks.SectorBlocks, commpc types.CommpCalculator, sps sealingpipeline.API, df dtypes.StorageDealFilter, logsSqlDB *LogSqlDB, logsDB *db.LogsDB, dagst *mktsdagstore.Wrapper, ps lotus_dtypes.ProviderPieceStore, ip *indexprovider.Wrapper, lp lotus_storagemarket.StorageProvider, cdm *storagemarket.ChainDealManager) (*storagemarket.Provider, error) {
 	return func(lc fx.Lifecycle, h host.Host, a v1api.FullNode, sqldb *sql.DB, dealsDB *db.DealsDB,
-		fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager, dp *storageadapter.DealPublisher, secb *sectorblocks.SectorBlocks, sps sealingpipeline.API,
+		fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager, dp *storageadapter.DealPublisher, secb *sectorblocks.SectorBlocks,
+		commpc types.CommpCalculator, sps sealingpipeline.API,
 		df dtypes.StorageDealFilter, logsSqlDB *LogSqlDB, logsDB *db.LogsDB,
-		dagst *dagstore.Wrapper, ps lotus_dtypes.ProviderPieceStore, ip *indexprovider.Wrapper,
+		dagst *mktsdagstore.Wrapper, ps lotus_dtypes.ProviderPieceStore, ip *indexprovider.Wrapper,
 		lp lotus_storagemarket.StorageProvider, cdm *storagemarket.ChainDealManager) (*storagemarket.Provider, error) {
 
 		prvCfg := storagemarket.Config{
-			MaxTransferDuration: time.Duration(cfg.Dealmaking.MaxTransferDuration),
+			MaxTransferDuration:     time.Duration(cfg.Dealmaking.MaxTransferDuration),
+			RemoteCommp:             cfg.Dealmaking.RemoteCommp,
+			MaxConcurrentLocalCommp: cfg.Dealmaking.MaxConcurrentLocalCommp,
+			TransferLimiter: storagemarket.TransferLimiterConfig{
+				MaxConcurrent:    cfg.Dealmaking.HttpTransferMaxConcurrentDownloads,
+				StallCheckPeriod: time.Duration(cfg.Dealmaking.HttpTransferStallCheckPeriod),
+				StallTimeout:     time.Duration(cfg.Dealmaking.HttpTransferStallTimeout),
+			},
 		}
 		dl := logs.NewDealLogger(logsDB)
 		tspt := httptransport.New(h, dl)
-		prov, err := storagemarket.NewProvider(prvCfg, sqldb, dealsDB, fundMgr, storageMgr, a, dp, provAddr, secb,
+		prov, err := storagemarket.NewProvider(prvCfg, sqldb, dealsDB, fundMgr, storageMgr, a, dp, provAddr, secb, commpc,
 			sps, cdm, df, logsSqlDB.db, logsDB, dagst, ps, ip, lp, &signatureVerifier{a}, dl, tspt)
 		if err != nil {
 			return nil, err
@@ -413,12 +484,13 @@ func NewStorageMarketProvider(provAddr address.Address, cfg *config.Boost) func(
 	}
 }
 
-func NewGraphqlServer(cfg *config.Boost) func(lc fx.Lifecycle, r repo.LockedRepo, h host.Host, prov *storagemarket.Provider, dealsDB *db.DealsDB, logsDB *db.LogsDB, plDB *db.ProposalLogsDB, fundsDB *db.FundsDB, fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager, publisher *storageadapter.DealPublisher, spApi sealingpipeline.API, legacyProv lotus_storagemarket.StorageProvider, legacyDT lotus_dtypes.ProviderDataTransfer, fullNode v1api.FullNode) *gql.Server {
+func NewGraphqlServer(cfg *config.Boost) func(lc fx.Lifecycle, r repo.LockedRepo, h host.Host, prov *storagemarket.Provider, dealsDB *db.DealsDB, logsDB *db.LogsDB, plDB *db.ProposalLogsDB, fundsDB *db.FundsDB, fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager, publisher *storageadapter.DealPublisher, spApi sealingpipeline.API, legacyProv lotus_storagemarket.StorageProvider, legacyDT lotus_dtypes.ProviderDataTransfer, ps lotus_dtypes.ProviderPieceStore, sa retrievalmarket.SectorAccessor, dagst dagstore.Interface, fullNode v1api.FullNode) *gql.Server {
 	return func(lc fx.Lifecycle, r repo.LockedRepo, h host.Host, prov *storagemarket.Provider, dealsDB *db.DealsDB, logsDB *db.LogsDB, plDB *db.ProposalLogsDB, fundsDB *db.FundsDB, fundMgr *fundmanager.FundManager,
 		storageMgr *storagemanager.StorageManager, publisher *storageadapter.DealPublisher, spApi sealingpipeline.API,
-		legacyProv lotus_storagemarket.StorageProvider, legacyDT lotus_dtypes.ProviderDataTransfer, fullNode v1api.FullNode) *gql.Server {
+		legacyProv lotus_storagemarket.StorageProvider, legacyDT lotus_dtypes.ProviderDataTransfer,
+		ps lotus_dtypes.ProviderPieceStore, sa retrievalmarket.SectorAccessor, dagst dagstore.Interface, fullNode v1api.FullNode) *gql.Server {
 
-		resolver := gql.NewResolver(cfg, r, h, dealsDB, logsDB, plDB, fundsDB, fundMgr, storageMgr, spApi, prov, legacyProv, legacyDT, publisher, fullNode)
+		resolver := gql.NewResolver(cfg, r, h, dealsDB, logsDB, plDB, fundsDB, fundMgr, storageMgr, spApi, prov, legacyProv, legacyDT, ps, sa, dagst, publisher, fullNode)
 		server := gql.NewServer(resolver)
 
 		lc.Append(fx.Hook{
@@ -427,5 +499,41 @@ func NewGraphqlServer(cfg *config.Boost) func(lc fx.Lifecycle, r repo.LockedRepo
 		})
 
 		return server
+	}
+}
+
+func NewIndexBackedBlockstore(lc fx.Lifecycle, dagst dagstore.Interface, ps lotus_dtypes.ProviderPieceStore, sa retrievalmarket.SectorAccessor, rp retrievalmarket.RetrievalProvider) (dtypes.IndexBackedBlockstore, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStop: func(ctx context.Context) error {
+			cancel()
+			return nil
+		},
+	})
+	ss, err := brm.NewShardSelector(ctx, ps, sa, rp)
+	if err != nil {
+		return nil, fmt.Errorf("creating shard selector: %w", err)
+	}
+	rbs, err := indexbs.NewIndexBackedBlockstore(ctx, dagst, ss.ShardSelectorF, 100)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create index backed blockstore: %w", err)
+	}
+	return dtypes.IndexBackedBlockstore(rbs), nil
+}
+
+func NewTracing(cfg *config.Boost) func(lc fx.Lifecycle) (*tracing.Tracing, error) {
+	return func(lc fx.Lifecycle) (*tracing.Tracing, error) {
+		if cfg.Tracing.Enabled {
+			// Instantiate the tracer and exporter
+			stop, err := tracing.New(cfg.Tracing.ServiceName, cfg.Tracing.Endpoint)
+			if err != nil {
+				return nil, fmt.Errorf("failed to instantiate tracer: %w", err)
+			}
+			lc.Append(fx.Hook{
+				OnStop: stop,
+			})
+		}
+
+		return &tracing.Tracing{}, nil
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/filecoin-project/boost/api"
 	"github.com/filecoin-project/boost/db"
+	"github.com/filecoin-project/boost/sealingpipeline"
 	"github.com/filecoin-project/boost/storagemarket"
 	"github.com/filecoin-project/boost/storagemarket/types"
 	"github.com/filecoin-project/go-address"
@@ -18,10 +19,10 @@ import (
 	"github.com/filecoin-project/lotus/lib/sigs"
 	"github.com/google/uuid"
 	logging "github.com/ipfs/go-log/v2"
-	"github.com/libp2p/go-libp2p-core/host"
-	"github.com/libp2p/go-libp2p-core/network"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p-core/protocol"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 var log = logging.Logger("boost-net")
@@ -152,14 +153,16 @@ type DealProvider struct {
 	prov     *storagemarket.Provider
 	fullNode v1api.FullNode
 	plDB     *db.ProposalLogsDB
+	spApi    sealingpipeline.API
 }
 
-func NewDealProvider(h host.Host, prov *storagemarket.Provider, fullNodeApi v1api.FullNode, plDB *db.ProposalLogsDB) *DealProvider {
+func NewDealProvider(h host.Host, prov *storagemarket.Provider, fullNodeApi v1api.FullNode, plDB *db.ProposalLogsDB, spApi sealingpipeline.API) *DealProvider {
 	p := &DealProvider{
 		host:     h,
 		prov:     prov,
 		fullNode: fullNodeApi,
 		plDB:     plDB,
+		spApi:    spApi,
 	}
 	return p
 }
@@ -196,7 +199,7 @@ func (p *DealProvider) handleNewDealStream(s network.Stream) {
 	// Start executing the deal.
 	// Note: This method just waits for the deal to be accepted, it doesn't
 	// wait for deal execution to complete.
-	res, err := p.prov.ExecuteDeal(&proposal, s.Conn().RemotePeer())
+	res, err := p.prov.ExecuteDeal(context.Background(), &proposal, s.Conn().RemotePeer())
 	if err != nil {
 		log.Warnw("deal proposal failed", "id", proposal.DealUUID, "err", err, "reason", res.Reason)
 	}
@@ -301,11 +304,18 @@ func (p *DealProvider) getDealStatus(req types.DealStatusRequest) types.DealStat
 
 	bts := p.prov.NBytesReceived(req.DealUUID)
 
+	si, err := p.spApi.SectorsStatus(p.ctx, pds.SectorID, false)
+	if err != nil {
+		log.Errorw("getting sector status from sealer", "err", err)
+		return errResp("getting sector status from sealer")
+	}
+
 	return types.DealStatusResponse{
 		DealUUID: req.DealUUID,
 		DealStatus: &types.DealStatus{
 			Error:             pds.Err,
 			Status:            pds.Checkpoint.String(),
+			SealingStatus:     string(si.State),
 			Proposal:          pds.ClientDealProposal.Proposal,
 			SignedProposalCid: signedPropCid,
 			PublishCid:        pds.PublishCID,

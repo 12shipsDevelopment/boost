@@ -41,6 +41,8 @@ type Boost struct {
 	SectorIndexApiInfo string
 	Dealmaking         DealmakingConfig
 	Wallets            WalletsConfig
+	Graphql            GraphqlConfig
+	Tracing            TracingConfig
 
 	// Lotus configs
 	LotusDealmaking lotus_config.DealmakingConfig
@@ -67,6 +69,17 @@ type WalletsConfig struct {
 	DealCollateral string
 	// Deprecated: Renamed to DealCollateral
 	PledgeCollateral string
+}
+
+type GraphqlConfig struct {
+	// The port that the graphql server listens on
+	Port uint64
+}
+
+type TracingConfig struct {
+	Enabled     bool
+	ServiceName string
+	Endpoint    string
 }
 
 type LotusDealmakingConfig struct {
@@ -135,24 +148,28 @@ type DealmakingConfig struct {
 	ExpectedSealDuration Duration
 	// Maximum amount of time proposed deal StartEpoch can be in future
 	MaxDealStartDelay Duration
-	// When a deal is ready to publish, the amount of time to wait for more
-	// deals to be ready to publish before publishing them all as a batch
-	PublishMsgPeriod Duration
-	// The maximum number of deals to include in a single PublishStorageDeals
-	// message
-	PublishMsgMaxDealsPerMsg uint64
-	// The maximum network fees to pay when sending the PublishStorageDeals message
-	PublishMsgMaxFee types.FIL
 	// The maximum collateral that the provider will put up against a deal,
 	// as a multiplier of the minimum collateral bound
 	MaxProviderCollateralMultiplier uint64
-	// The maximum allowed disk usage size in bytes of staging deals not yet
-	// passed to the sealing node by the markets service. 0 is unlimited.
+	// The maximum allowed disk usage size in bytes of downloaded deal data
+	// that has not yet been passed to the sealing node by boost.
+	// When the client makes a new deal proposal to download data from a host,
+	// boost checks this config value against the sum of:
+	// - the amount of data downloaded in the staging area
+	// - the amount of data that is queued for download
+	// - the amount of data in the proposed deal
+	// If the total amount would exceed the limit, boost rejects the deal.
+	// Set this value to 0 to indicate there is no limit.
 	MaxStagingDealsBytes int64
-	// The maximum number of parallel online data transfers for storage deals
-	SimultaneousTransfersForStorage uint64
-	// The maximum number of parallel online data transfers for retrieval deals
-	SimultaneousTransfersForRetrieval uint64
+	// The percentage of MaxStagingDealsBytes that is allocated to each host.
+	// When the client makes a new deal proposal to download data from a host,
+	// boost checks this config value against the sum of:
+	// - the amount of data downloaded from the host in the staging area
+	// - the amount of data that is queued for download from the host
+	// - the amount of data in the proposed deal
+	// If the total amount would exceed the limit, boost rejects the deal.
+	// Set this value to 0 to indicate there is no limit per host.
+	MaxStagingDealsPercentPerHost uint64
 	// Minimum start epoch buffer to give time for sealing of sector with deal.
 	StartEpochSealingBuffer uint64
 	// The amount of time to keep deal proposal logs for before cleaning them up.
@@ -169,6 +186,35 @@ type DealmakingConfig struct {
 
 	// The maximum amount of time a transfer can take before it fails
 	MaxTransferDuration Duration
+
+	// Whether to do commp on the Boost node (local) or on the Sealer (remote)
+	RemoteCommp bool
+	// The maximum number of commp processes to run in parallel on the local
+	// boost process
+	MaxConcurrentLocalCommp uint64
+
+	// The public multi-address for retrieving deals with booster-http.
+	// Note: Must be in multiaddr format, eg /dns/foo.com/tcp/443/https
+	HTTPRetrievalMultiaddr string
+
+	// The maximum number of concurrent storage deal HTTP downloads.
+	// Note that this is a soft maximum; if some downloads stall,
+	// more downloads are allowed to start.
+	HttpTransferMaxConcurrentDownloads uint64
+	// The period between checking if downloads have stalled.
+	HttpTransferStallCheckPeriod Duration
+	// The time that can elapse before a download is considered stalled (and
+	// another concurrent download is allowed to start).
+	HttpTransferStallTimeout Duration
+
+	// The peed id used by booster-bitswap. To set, copy the value
+	// printed by running 'booster-bitswap init'. If this value is set,
+	// Boost will:
+	// - listen on bitswap protocols on its own peer id and forward them
+	// to booster bitswap
+	// - advertise bitswap records to the content indexer
+	// - list bitswap in available transports on the retrieval transport protocol
+	BitswapPeerID string
 }
 
 type FeeConfig struct {

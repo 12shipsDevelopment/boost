@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/go-redis/redis/v8"
 	"time"
 
 	"github.com/filecoin-project/boost/api"
@@ -17,13 +16,17 @@ import (
 	"github.com/filecoin-project/boost/node/config"
 	"github.com/filecoin-project/boost/node/impl"
 	"github.com/filecoin-project/boost/node/impl/common"
-	"github.com/filecoin-project/boost/node/impl/net"
 	"github.com/filecoin-project/boost/node/modules"
 	"github.com/filecoin-project/boost/node/modules/dtypes"
+	"github.com/filecoin-project/boost/protocolproxy"
+	"github.com/filecoin-project/boost/retrievalmarket/lp2pimpl"
 	"github.com/filecoin-project/boost/sealingpipeline"
 	"github.com/filecoin-project/boost/storagemanager"
 	"github.com/filecoin-project/boost/storagemarket"
 	"github.com/filecoin-project/boost/storagemarket/dealfilter"
+	smtypes "github.com/filecoin-project/boost/storagemarket/types"
+	"github.com/filecoin-project/boost/tracing"
+	"github.com/filecoin-project/dagstore"
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-fil-markets/retrievalmarket"
 	rmnet "github.com/filecoin-project/go-fil-markets/retrievalmarket/network"
@@ -33,14 +36,11 @@ import (
 	provider "github.com/filecoin-project/index-provider"
 	lotus_api "github.com/filecoin-project/lotus/api"
 	"github.com/filecoin-project/lotus/chain/types"
-	lotus_sectorstorage "github.com/filecoin-project/lotus/extern/sector-storage"
-	sectorstorage "github.com/filecoin-project/lotus/extern/sector-storage"
-	"github.com/filecoin-project/lotus/extern/sector-storage/stores"
 	lotus_journal "github.com/filecoin-project/lotus/journal"
 	"github.com/filecoin-project/lotus/journal/alerting"
 	_ "github.com/filecoin-project/lotus/lib/sigs/bls"
 	_ "github.com/filecoin-project/lotus/lib/sigs/secp"
-	"github.com/filecoin-project/lotus/markets/dagstore"
+	mktsdagstore "github.com/filecoin-project/lotus/markets/dagstore"
 	lotus_dealfilter "github.com/filecoin-project/lotus/markets/dealfilter"
 	"github.com/filecoin-project/lotus/markets/idxprov"
 	"github.com/filecoin-project/lotus/markets/retrievaladapter"
@@ -55,21 +55,23 @@ import (
 	"github.com/filecoin-project/lotus/node/modules/lp2p"
 	lotus_lp2p "github.com/filecoin-project/lotus/node/modules/lp2p"
 	lotus_repo "github.com/filecoin-project/lotus/node/repo"
-	"github.com/filecoin-project/lotus/storage"
+	"github.com/filecoin-project/lotus/storage/ctladdr"
+	"github.com/filecoin-project/lotus/storage/paths"
+	"github.com/filecoin-project/lotus/storage/sealer"
 	"github.com/filecoin-project/lotus/storage/sectorblocks"
 	"github.com/filecoin-project/lotus/system"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/ipfs/go-metrics-interface"
-	ci "github.com/libp2p/go-libp2p-core/crypto"
-	"github.com/libp2p/go-libp2p-core/host"
-	"github.com/libp2p/go-libp2p-core/network"
-	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p-core/peerstore"
-	"github.com/libp2p/go-libp2p-core/routing"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
-	"github.com/libp2p/go-libp2p-peerstore/pstoremem"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	record "github.com/libp2p/go-libp2p-record"
+	ci "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/libp2p/go-libp2p/core/routing"
+	"github.com/libp2p/go-libp2p/p2p/host/peerstore/pstoremem"
 	"github.com/libp2p/go-libp2p/p2p/net/conngater"
 	"github.com/multiformats/go-multiaddr"
 	"go.uber.org/fx"
@@ -79,7 +81,8 @@ import (
 var log = logging.Logger("builder")
 
 // special is a type used to give keys to modules which
-//  can't really be identified by the returned type
+//
+//	can't really be identified by the returned type
 type special struct{ id int }
 
 //nolint:golint
@@ -103,6 +106,7 @@ var (
 type invoke int
 
 // Invokes are called in the order they are defined.
+//
 //nolint:golint
 const (
 	// InitJournal at position 0 initializes the journal global var as soon as
@@ -138,6 +142,8 @@ const (
 	HandleMigrateProviderFundsKey
 	HandleDealsKey
 	HandleRetrievalKey
+	HandleRetrievalTransportsKey
+	HandleProtocolProxyKey
 	RunSectorServiceKey
 
 	// boost should be started after legacy markets (HandleDealsKey)
@@ -263,15 +269,15 @@ func ConfigCommon(cfg *config.Common) Option {
 		Override(SetApiEndpointKey, func(lr lotus_repo.LockedRepo, e dtypes.APIEndpoint) error {
 			return lr.SetAPIEndpoint(e)
 		}),
-		Override(new(stores.URLs), func(e dtypes.APIEndpoint) (stores.URLs, error) {
+		Override(new(paths.URLs), func(e dtypes.APIEndpoint) (paths.URLs, error) {
 			ip := cfg.API.RemoteListenAddress
 
-			var urls stores.URLs
+			var urls paths.URLs
 			urls = append(urls, "http://"+ip+"/remote") // TODO: This makes no assumptions, and probably could...
 			return urls, nil
 		}),
 		ApplyIf(func(s *Settings) bool { return s.Base }), // apply only if Base has already been applied
-		Override(new(api.Net), From(new(net.NetAPI))),
+		Override(new(api.Net), From(new(lotus_net.NetAPI))),
 		Override(new(api.Common), From(new(common.CommonAPI))),
 
 		Override(new(lotus_api.Net), From(new(lotus_net.NetAPI))),
@@ -288,7 +294,7 @@ func ConfigCommon(cfg *config.Common) Option {
 			Override(new(lotus_dtypes.BootstrapPeers), modules.ConfigBootstrap(cfg.Libp2p.BootstrapPeers)),
 		),
 
-		Override(new(network.ResourceManager), lp2p.ResourceManager(cfg.Libp2p.ConnMgrHigh)),
+		Override(new(network.ResourceManager), modules.ResourceManager(cfg.Libp2p.ConnMgrHigh)),
 		Override(ResourceManagerKey, lp2p.ResourceManagerOption),
 		Override(new(*pubsub.PubSub), lp2p.GossipSub),
 		Override(new(*lotus_config.Pubsub), &cfg.Pubsub),
@@ -389,7 +395,7 @@ func New(ctx context.Context, opts ...Option) (StopFunc, error) {
 }
 
 var BoostNode = Options(
-	Override(new(lotus_sectorstorage.StorageAuth), lotus_modules.StorageAuth),
+	Override(new(sealer.StorageAuth), lotus_modules.StorageAuth),
 
 	// Actor config
 	Override(new(lotus_dtypes.MinerAddress), lotus_modules.MinerAddress),
@@ -449,20 +455,21 @@ func ConfigBoost(cfg *config.Boost) Option {
 		Override(new(lotus_dtypes.BootstrapPeers), lotus_modules.BuiltinBootstrap),
 		Override(new(lotus_dtypes.DrandBootstrap), lotus_modules.DrandBootstrap),
 
-		Override(new(stores.LocalStorage), From(new(lotus_repo.LockedRepo))),
-		Override(new(*stores.Local), lotus_modules.LocalStorage),
-		Override(new(sectorstorage.Config), cfg.StorageManager()),
-		Override(new(*stores.Remote), lotus_modules.RemoteStorage),
+		Override(new(paths.LocalStorage), From(new(lotus_repo.LockedRepo))),
+		Override(new(*paths.Local), lotus_modules.LocalStorage),
+		Override(new(sealer.Config), cfg.StorageManager()),
+		Override(new(*paths.Remote), lotus_modules.RemoteStorage),
 
 		Override(new(*fundmanager.FundManager), fundmanager.New(fundmanager.Config{
 			StorageMiner: walletMiner,
 			CollatWallet: walletDealCollat,
 			PubMsgWallet: walletPSD,
-			PubMsgBalMin: abi.TokenAmount(cfg.Dealmaking.PublishMsgMaxFee),
+			PubMsgBalMin: abi.TokenAmount(cfg.LotusFees.MaxPublishDealsFee),
 		})),
 
 		Override(new(*storagemanager.StorageManager), storagemanager.New(storagemanager.Config{
-			MaxStagingDealsBytes: uint64(cfg.Dealmaking.MaxStagingDealsBytes),
+			MaxStagingDealsBytes:          uint64(cfg.Dealmaking.MaxStagingDealsBytes),
+			MaxStagingDealsPercentPerHost: uint64(cfg.Dealmaking.MaxStagingDealsPercentPerHost),
 		})),
 
 		// Sector API
@@ -473,17 +480,21 @@ func ConfigBoost(cfg *config.Boost) Option {
 		// Sealing Pipeline State API
 		Override(new(sealingpipeline.API), From(new(lotus_modules.MinerStorageService))),
 
-		Override(new(*indexprovider.Wrapper), indexprovider.NewWrapper(cfg.DAGStore)),
+		Override(new(*indexprovider.Wrapper), indexprovider.NewWrapper(cfg)),
 
 		Override(new(*storagemarket.ChainDealManager), modules.NewChainDealManager),
+		Override(new(smtypes.CommpCalculator), From(new(lotus_modules.MinerStorageService))),
 
 		Override(new(*storagemarket.Provider), modules.NewStorageMarketProvider(walletMiner, cfg)),
 
 		// GraphQL server
 		Override(new(*gql.Server), modules.NewGraphqlServer(cfg)),
 
+		// Tracing
+		Override(new(*tracing.Tracing), modules.NewTracing(cfg)),
+
 		// Address selector
-		Override(new(*storage.AddressSelector), lotus_modules.AddressSelector(&lotus_config.MinerAddressConfig{
+		Override(new(*ctladdr.AddressSelector), lotus_modules.AddressSelector(&lotus_config.MinerAddressConfig{
 			DealPublishControl: []string{cfg.Wallets.PublishStorageDeals},
 		})),
 
@@ -493,7 +504,7 @@ func ConfigBoost(cfg *config.Boost) Option {
 		Override(new(lotus_dtypes.ProviderPieceStore), lotus_modules.NewProviderPieceStore),
 
 		// Lotus Markets (retrieval deps)
-		Override(new(lotus_sectorstorage.PieceProvider), lotus_sectorstorage.NewPieceProvider),
+		Override(new(sealer.PieceProvider), sealer.NewPieceProvider),
 
 		Override(new(lotus_dtypes.RetrievalPricingFunc), lotus_modules.RetrievalPricingFunc(lotus_config.DealmakingConfig{
 			RetrievalPricing: &lotus_config.RetrievalPricing{
@@ -503,16 +514,22 @@ func ConfigBoost(cfg *config.Boost) Option {
 		})),
 
 		// DAG Store
-		Override(new(dagstore.MinerAPI), lotus_modules.NewMinerAPI(cfg.DAGStore)),
+		Override(new(mktsdagstore.MinerAPI), lotus_modules.NewMinerAPI(cfg.DAGStore)),
 		Override(DAGStoreKey, lotus_modules.DAGStore(cfg.DAGStore)),
+		Override(new(dagstore.Interface), From(new(*dagstore.DAGStore))),
+		Override(new(dtypes.IndexBackedBlockstore), modules.NewIndexBackedBlockstore),
 
 		// Lotus Markets (retrieval)
-		Override(new(dagstore.SectorAccessor), sectoraccessor.NewSectorAccessor),
-		Override(new(retrievalmarket.SectorAccessor), From(new(dagstore.SectorAccessor))),
+		Override(new(mktsdagstore.SectorAccessor), sectoraccessor.NewSectorAccessor),
+		Override(new(retrievalmarket.SectorAccessor), From(new(mktsdagstore.SectorAccessor))),
 		Override(new(retrievalmarket.RetrievalProviderNode), retrievaladapter.NewRetrievalProviderNode),
 		Override(new(rmnet.RetrievalMarketNetwork), lotus_modules.RetrievalNetwork),
 		Override(new(retrievalmarket.RetrievalProvider), lotus_modules.RetrievalProvider),
 		Override(HandleRetrievalKey, lotus_modules.HandleRetrieval),
+		Override(new(*lp2pimpl.TransportsListener), modules.NewTransportsListener(cfg)),
+		Override(new(*protocolproxy.ProtocolProxy), modules.NewProtocolProxy(cfg)),
+		Override(HandleRetrievalTransportsKey, modules.HandleRetrievalTransports),
+		Override(HandleProtocolProxyKey, modules.HandleProtocolProxy),
 		Override(new(idxprov.MeshCreator), idxprov.NewMeshCreator),
 		Override(new(provider.Interface), modules.IndexProvider(cfg.IndexProvider)),
 
@@ -522,10 +539,8 @@ func ConfigBoost(cfg *config.Boost) Option {
 		Override(new(lotus_dtypes.ProviderDataTransfer), modules.NewProviderDataTransfer),
 		Override(new(*storedask.StoredAsk), lotus_modules.NewStorageAsk),
 
-		Override(new(sectorblocks.AllSectorBuilders), lotus_modules.AllSectorBuilders),
-		Override(new(*redis.ClusterClient), lotus_modules.RedisClient()),
 		Override(new(lotus_storagemarket.StorageProviderNode), lotus_storageadapter.NewProviderNodeAdapter(&legacyFees, &cfg.LotusDealmaking)),
-		Override(new(lotus_storagemarket.StorageProvider), lotus_modules.StorageProvider),
+		Override(new(lotus_storagemarket.StorageProvider), modules.NewLegacyStorageProvider(cfg)),
 		Override(HandleDealsKey, modules.HandleLegacyDeals),
 		Override(HandleBoostDealsKey, modules.HandleBoostDeals),
 		Override(HandleProposalLogCleanerKey, modules.HandleProposalLogCleaner(time.Duration(cfg.Dealmaking.DealProposalLogDuration))),
@@ -555,18 +570,18 @@ func ConfigBoost(cfg *config.Boost) Option {
 		),
 
 		Override(new(*lotus_storageadapter.DealPublisher), lotus_storageadapter.NewDealPublisher(&legacyFees, lotus_storageadapter.PublishMsgConfig{
-			Period:                  time.Duration(cfg.Dealmaking.PublishMsgPeriod),
+			Period:                  time.Duration(cfg.LotusDealmaking.PublishMsgPeriod),
 			MaxDealsPerMsg:          cfg.LotusDealmaking.MaxDealsPerPublishMsg,
 			StartEpochSealingBuffer: cfg.LotusDealmaking.StartEpochSealingBuffer,
 		})),
 
-		Override(new(sectorstorage.Unsealer), From(new(lotus_modules.MinerStorageService))),
-		Override(new(stores.SectorIndex), From(new(lotus_modules.MinerSealingService))),
+		Override(new(sealer.Unsealer), From(new(lotus_modules.MinerStorageService))),
+		Override(new(paths.SectorIndex), From(new(lotus_modules.MinerSealingService))),
 
 		Override(new(lotus_modules.MinerStorageService), lotus_modules.ConnectStorageService(cfg.SectorIndexApiInfo)),
 		Override(new(lotus_modules.MinerSealingService), lotus_modules.ConnectSealingService(cfg.SealerApiInfo)),
 
-		Override(new(sectorstorage.StorageAuth), lotus_modules.StorageAuthWithURL(cfg.SectorIndexApiInfo)),
+		Override(new(sealer.StorageAuth), lotus_modules.StorageAuthWithURL(cfg.SectorIndexApiInfo)),
 
 		// Dynamic Lotus configs
 		Override(new(lotus_dtypes.ConsiderOnlineStorageDealsConfigFunc), lotus_modules.NewConsiderOnlineStorageDealsConfigFunc),

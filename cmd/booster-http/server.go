@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/filecoin-project/boost/metrics"
+	"github.com/filecoin-project/boost/tracing"
 	"github.com/filecoin-project/dagstore/mount"
 	"github.com/filecoin-project/go-fil-markets/piecestore"
 	"github.com/filecoin-project/go-fil-markets/retrievalmarket"
@@ -19,16 +21,27 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
+	"github.com/ipld/go-car/v2"
+	"github.com/ipld/go-car/v2/index"
 	"github.com/multiformats/go-multihash"
 	"github.com/multiformats/go-varint"
+	"go.opencensus.io/stats"
 )
 
 var ErrNotFound = errors.New("not found")
 
+// For data served by the endpoints in the HTTP server that never changes
+// (eg pieces identified by a piece CID) send a cache header with a constant,
+// non-zero last modified time.
+var lastModified = time.UnixMilli(1)
+
+const carSuffix = ".car"
+
 type HttpServer struct {
-	path string
-	port int
-	api  HttpServerApi
+	path          string
+	port          int
+	allowIndexing bool
+	api           HttpServerApi
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -36,15 +49,15 @@ type HttpServer struct {
 }
 
 type HttpServerApi interface {
-	PiecesContainingMultihash(mh multihash.Multihash) ([]cid.Cid, error)
+	PiecesContainingMultihash(ctx context.Context, mh multihash.Multihash) ([]cid.Cid, error)
 	GetMaxPieceOffset(pieceCid cid.Cid) (uint64, error)
 	GetPieceInfo(pieceCID cid.Cid) (*piecestore.PieceInfo, error)
 	IsUnsealed(ctx context.Context, sectorID abi.SectorNumber, offset abi.UnpaddedPieceSize, length abi.UnpaddedPieceSize) (bool, error)
 	UnsealSectorAt(ctx context.Context, sectorID abi.SectorNumber, pieceOffset abi.UnpaddedPieceSize, length abi.UnpaddedPieceSize) (mount.Reader, error)
 }
 
-func NewHttpServer(path string, port int, api HttpServerApi) *HttpServer {
-	return &HttpServer{path: path, port: port, api: api}
+func NewHttpServer(path string, port int, allowIndexing bool, api HttpServerApi) *HttpServer {
+	return &HttpServer{path: path, port: port, allowIndexing: allowIndexing, api: api}
 }
 
 func (s *HttpServer) payloadBasePath() string {
@@ -64,6 +77,7 @@ func (s *HttpServer) Start(ctx context.Context) {
 	handler.HandleFunc(s.pieceBasePath(), s.handleByPieceCid)
 	handler.HandleFunc("/", s.handleIndex)
 	handler.HandleFunc("/index.html", s.handleIndex)
+	handler.Handle("/metrics", metrics.Exporter("booster_http")) // metrics
 	s.server = &http.Server{
 		Addr:    listenAddr,
 		Handler: handler,
@@ -76,7 +90,7 @@ func (s *HttpServer) Start(ctx context.Context) {
 
 	go func() {
 		if err := s.server.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalf("http.ListenAndServe(): %v", err)
+			log.Fatalf("http.ListenAndServe(): %w", err)
 		}
 	}()
 }
@@ -95,7 +109,7 @@ const idxPage = `
       <tbody>
       <tr>
         <td>
-          Download a CAR file by payload CID
+          Download a raw piece by payload CID
         </td>
         <td>
           <a href="/payload/payloadcid">/payload/<payload cid></a>
@@ -103,10 +117,26 @@ const idxPage = `
       </tr>
       <tr>
         <td>
-          Download a CAR file by piece CID
+          Download a CAR file by payload CID
+        </td>
+        <td>
+          <a href="/payload/payloadcid.car">/payload/<payload cid>.car</a>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          Download a raw piece by piece CID
         </td>
         <td>
           <a href="/piece/piececid">/piece/<piece cid></a>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          Download a CAR file by piece CID
+        </td>
+        <td>
+          <a href="/piece/piececid.car">/piece/<piece cid>.car</a>
         </td>
       </tr>
       </tbody>
@@ -121,95 +151,153 @@ func (s *HttpServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HttpServer) handleByPayloadCid(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	ctx, span := tracing.Tracer.Start(r.Context(), "http.payload_cid")
+	defer span.End()
+
+	stats.Record(ctx, metrics.HttpPayloadByCidRequestCount.M(1))
+
+	// Remove the path up to the payload cid
 	prefixLen := len(s.payloadBasePath())
 	if len(r.URL.Path) <= prefixLen {
-		msg := fmt.Sprintf("path '%s' is missing piece CID", r.URL.Path)
+		msg := fmt.Sprintf("path '%s' is missing payload CID", r.URL.Path)
 		writeError(w, r, http.StatusBadRequest, msg)
+		stats.Record(ctx, metrics.HttpPayloadByCid400ResponseCount.M(1))
 		return
 	}
 
 	fileName := r.URL.Path[prefixLen:]
+	isCar := strings.HasSuffix(fileName, carSuffix)
 	payloadCidStr := strings.Replace(fileName, ".car", "", 1)
 	payloadCid, err := cid.Parse(payloadCidStr)
 	if err != nil {
 		msg := fmt.Sprintf("parsing payload CID '%s': %s", payloadCidStr, err.Error())
 		writeError(w, r, http.StatusBadRequest, msg)
+		stats.Record(ctx, metrics.HttpPayloadByCid400ResponseCount.M(1))
 		return
 	}
 
-	pieces, err := s.api.PiecesContainingMultihash(payloadCid.Hash())
+	// Find all the pieces that contain the payload cid
+	pieces, err := s.api.PiecesContainingMultihash(ctx, payloadCid.Hash())
 	if err != nil {
 		if isNotFoundError(err) {
 			msg := fmt.Sprintf("getting piece that contains payload CID '%s': %s", payloadCid, err.Error())
 			writeError(w, r, http.StatusNotFound, msg)
+			stats.Record(ctx, metrics.HttpPayloadByCid404ResponseCount.M(1))
 			return
 		}
 		log.Errorf("getting piece that contains payload CID '%s': %s", payloadCid, err)
 		msg := fmt.Sprintf("server error getting piece that contains payload CID '%s'", payloadCidStr)
 		writeError(w, r, http.StatusInternalServerError, msg)
+		stats.Record(ctx, metrics.HttpPayloadByCid500ResponseCount.M(1))
 		return
 	}
 
 	// Just get the content of the first piece returned (if the client wants a
 	// different piece they can just call the /piece endpoint)
 	pieceCid := pieces[0]
-	ctx := r.Context()
 	content, err := s.getPieceContent(ctx, pieceCid)
+	if err == nil && isCar {
+		content, err = s.getCarContent(pieceCid, content)
+	}
 	if err != nil {
 		if isNotFoundError(err) {
 			msg := fmt.Sprintf("getting content for payload CID %s in piece %s: %s", payloadCidStr, pieceCid, err)
 			writeError(w, r, http.StatusNotFound, msg)
+			stats.Record(ctx, metrics.HttpPayloadByCid404ResponseCount.M(1))
 			return
 		}
 		log.Errorf("getting content for payload CID %s in piece %s: %s", payloadCid, pieceCid, err)
 		msg := fmt.Sprintf("server error getting content for payload CID %s in piece %s", payloadCidStr, pieceCid)
 		writeError(w, r, http.StatusInternalServerError, msg)
+		stats.Record(ctx, metrics.HttpPayloadByCid500ResponseCount.M(1))
 		return
 	}
 
-	serveCAR(w, r, content)
+	// Set an Etag based on the piece cid
+	etag := pieceCid.String()
+	if isCar {
+		etag += carSuffix
+	}
+	w.Header().Set("Etag", etag)
+
+	serveContent(w, r, content, getContentType(isCar))
+
+	stats.Record(ctx, metrics.HttpPayloadByCid200ResponseCount.M(1))
+	stats.Record(ctx, metrics.HttpPayloadByCidRequestDuration.M(float64(time.Since(startTime).Milliseconds())))
 }
 
 func (s *HttpServer) handleByPieceCid(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	ctx, span := tracing.Tracer.Start(r.Context(), "http.piece_cid")
+	defer span.End()
+	stats.Record(ctx, metrics.HttpPieceByCidRequestCount.M(1))
+
+	// Remove the path up to the piece cid
 	prefixLen := len(s.pieceBasePath())
 	if len(r.URL.Path) <= prefixLen {
 		msg := fmt.Sprintf("path '%s' is missing piece CID", r.URL.Path)
 		writeError(w, r, http.StatusBadRequest, msg)
+		stats.Record(ctx, metrics.HttpPieceByCid400ResponseCount.M(1))
 		return
 	}
 
 	fileName := r.URL.Path[prefixLen:]
-	pieceCidStr := strings.Replace(fileName, ".car", "", 1)
+	isCar := strings.HasSuffix(fileName, carSuffix)
+	pieceCidStr := strings.Replace(fileName, carSuffix, "", 1)
 	pieceCid, err := cid.Parse(pieceCidStr)
 	if err != nil {
 		msg := fmt.Sprintf("parsing piece CID '%s': %s", pieceCidStr, err.Error())
 		writeError(w, r, http.StatusBadRequest, msg)
+		stats.Record(ctx, metrics.HttpPieceByCid400ResponseCount.M(1))
 		return
 	}
 
-	ctx := r.Context()
+	// Get a reader over the the piece
 	content, err := s.getPieceContent(ctx, pieceCid)
+	if err == nil && isCar {
+		content, err = s.getCarContent(pieceCid, content)
+	}
 	if err != nil {
 		if isNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, err.Error())
+			stats.Record(ctx, metrics.HttpPieceByCid404ResponseCount.M(1))
 			return
 		}
 		log.Errorf("getting content for piece %s: %s", pieceCid, err)
 		msg := fmt.Sprintf("server error getting content for piece CID %s", pieceCidStr)
 		writeError(w, r, http.StatusInternalServerError, msg)
+		stats.Record(ctx, metrics.HttpPieceByCid500ResponseCount.M(1))
 		return
 	}
 
-	serveCAR(w, r, content)
+	// Set an Etag based on the piece cid
+	etag := pieceCid.String()
+	if isCar {
+		etag += carSuffix
+	}
+	w.Header().Set("Etag", etag)
+
+	serveContent(w, r, content, getContentType(isCar))
+
+	stats.Record(ctx, metrics.HttpPieceByCid200ResponseCount.M(1))
+	stats.Record(ctx, metrics.HttpPieceByCidRequestDuration.M(float64(time.Since(startTime).Milliseconds())))
 }
 
-func serveCAR(w http.ResponseWriter, r *http.Request, content io.ReadSeeker) {
+func getContentType(isCar bool) string {
+	if isCar {
+		return "application/vnd.ipld.car"
+	}
+	return "application/piece"
+}
+
+func serveContent(w http.ResponseWriter, r *http.Request, content io.ReadSeeker, contentType string) {
 	// Set the Content-Type header explicitly so that http.ServeContent doesn't
 	// try to do it implicitly
-	w.Header().Set("Content-Type", "application/vnd.ipld.car")
+	w.Header().Set("Content-Type", contentType)
 
 	if r.Method == "HEAD" {
-		// For an HTTP HEAD request we don't send any data (just headers)
+		// For an HTTP HEAD request ServeContent doesn't send any data (just headers)
 		http.ServeContent(w, r, "", time.Time{}, content)
 		alog("%s\tHEAD %s", color.New(color.FgGreen).Sprintf("%d", http.StatusOK), r.URL)
 		return
@@ -224,9 +312,11 @@ func serveCAR(w http.ResponseWriter, r *http.Request, content io.ReadSeeker) {
 	}}
 
 	// Send the content
+	// Note that the last modified time is a constant value because the data
+	// in a piece identified by a cid will never change.
 	start := time.Now()
 	alogAt(start, "%s\tGET %s", color.New(color.FgGreen).Sprintf("%d", http.StatusOK), r.URL)
-	http.ServeContent(writeErrWatcher, r, "", time.Time{}, content)
+	http.ServeContent(writeErrWatcher, r, "", lastModified, content)
 
 	// Check if there was an error during the transfer
 	end := time.Now()
@@ -282,11 +372,24 @@ func (s *HttpServer) getPieceContent(ctx context.Context, pieceCid cid.Cid) (io.
 		return nil, fmt.Errorf("getting raw data from sector %d: %w", di.SectorID, err)
 	}
 
+	return pieceReader, nil
+}
+
+func (s *HttpServer) getCarContent(pieceCid cid.Cid, pieceReader io.ReadSeeker) (io.ReadSeeker, error) {
 	maxOffset, err := s.api.GetMaxPieceOffset(pieceCid)
 	if err != nil {
-		return nil, fmt.Errorf("getting max offset for piece %s: %w", pieceCid, err)
+		if s.allowIndexing {
+			// If it's not possible to get the max piece offset it may be because
+			// the CAR file hasn't been indexed yet. So try to index it in real time.
+			alog("%s\tbuilding index for %s", color.New(color.FgBlue).Sprintf("INFO"), pieceCid)
+			maxOffset, err = getMaxPieceOffset(pieceReader)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("getting max offset for piece %s: %w", pieceCid, err)
+		}
 	}
 
+	// Seek to the max offset
 	_, err = pieceReader.Seek(int64(maxOffset), io.SeekStart)
 	if err != nil {
 		return nil, fmt.Errorf("seeking to offset %d in piece data: %w", maxOffset, err)
@@ -329,6 +432,33 @@ func (s *HttpServer) getPieceContent(ctx context.Context, pieceCid cid.Cid) (io.
 	return lr, nil
 }
 
+// getMaxPieceOffset generates a CAR file index from the reader, and returns
+// the maximum offset in the index
+func getMaxPieceOffset(reader io.ReadSeeker) (uint64, error) {
+	idx, err := car.GenerateIndex(reader, car.ZeroLengthSectionAsEOF(true), car.StoreIdentityCIDs(true))
+	if err != nil {
+		return 0, fmt.Errorf("generating CAR index: %w", err)
+	}
+
+	itidx, ok := idx.(index.IterableIndex)
+	if !ok {
+		return 0, fmt.Errorf("could not cast CAR file index %t to an IterableIndex", idx)
+	}
+
+	var maxOffset uint64
+	err = itidx.ForEach(func(m multihash.Multihash, offset uint64) error {
+		if offset > maxOffset {
+			maxOffset = offset
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("getting max offset: %w", err)
+	}
+
+	return maxOffset, nil
+}
+
 type limitSeekReader struct {
 	io.Reader
 	readSeeker   io.ReadSeeker
@@ -361,11 +491,13 @@ func (s *HttpServer) unsealedDeal(ctx context.Context, pieceInfo piecestore.Piec
 			continue
 		}
 		if isUnsealed {
+			// Found a deal with an unsealed piece, so return the deal info
 			return &di, nil
 		}
 		sealedCount++
 	}
 
+	// It wasn't possible to find a deal with the piece cid that is unsealed.
 	// Try to return an error message with as much useful information as possible
 	dealSectors := make([]string, 0, len(pieceInfo.Deals))
 	for _, di := range pieceInfo.Deals {

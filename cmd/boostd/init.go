@@ -482,7 +482,7 @@ func migrateMarketsConfig(cctx *cli.Context, mktsRepo lotus_repo.LockedRepo, boo
 		rcfg.Common.Backup = mktsCfg.Common.Backup
 		rcfg.Common.Libp2p = mktsCfg.Common.Libp2p
 		rcfg.Storage = config.StorageConfig{ParallelFetchLimit: mktsCfg.Storage.ParallelFetchLimit}
-		rcfg.Dealmaking = boostDealMakingCfg(mktsCfg)
+		setBoostDealMakingCfg(&rcfg.Dealmaking, mktsCfg)
 		rcfg.LotusDealmaking = mktsCfg.Dealmaking
 		rcfg.LotusFees = config.FeeConfig{
 			MaxPublishDealsFee:     mktsCfg.Fees.MaxPublishDealsFee,
@@ -538,10 +538,6 @@ func initBoost(ctx context.Context, cctx *cli.Context, marketsRepo lotus_repo.Lo
 	walletCP, err := address.NewFromString(cctx.String("wallet-deal-collateral"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse wallet-deal-collateral: %s; err: %w", cctx.String("wallet-deal-collateral"), err)
-	}
-
-	if walletPSD.String() == walletCP.String() {
-		return nil, fmt.Errorf("wallets for PublishStorageDeals and deal collateral must be different")
 	}
 
 	if cctx.Int64("max-staging-deals-bytes") <= 0 {
@@ -687,30 +683,23 @@ func addMinerAddressToDatastore(ds datastore.Batching, minerActor address.Addres
 	return ds.Put(context.Background(), minerAddrDSKey, minerActor.Bytes())
 }
 
-func boostDealMakingCfg(mktsCfg *lotus_config.StorageMiner) config.DealmakingConfig {
+func setBoostDealMakingCfg(bdm *config.DealmakingConfig, mktsCfg *lotus_config.StorageMiner) {
 	ldm := mktsCfg.Dealmaking
-	return config.DealmakingConfig{
-		ConsiderOnlineStorageDeals:        ldm.ConsiderOnlineStorageDeals,
-		ConsiderOfflineStorageDeals:       ldm.ConsiderOfflineStorageDeals,
-		ConsiderOnlineRetrievalDeals:      ldm.ConsiderOnlineRetrievalDeals,
-		ConsiderOfflineRetrievalDeals:     ldm.ConsiderOfflineRetrievalDeals,
-		ConsiderVerifiedStorageDeals:      ldm.ConsiderVerifiedStorageDeals,
-		ConsiderUnverifiedStorageDeals:    ldm.ConsiderUnverifiedStorageDeals,
-		PieceCidBlocklist:                 ldm.PieceCidBlocklist,
-		ExpectedSealDuration:              config.Duration(ldm.ExpectedSealDuration),
-		MaxDealStartDelay:                 config.Duration(ldm.MaxDealStartDelay),
-		PublishMsgPeriod:                  config.Duration(ldm.PublishMsgPeriod),
-		PublishMsgMaxDealsPerMsg:          ldm.MaxDealsPerPublishMsg,
-		PublishMsgMaxFee:                  mktsCfg.Fees.MaxPublishDealsFee,
-		MaxProviderCollateralMultiplier:   ldm.MaxProviderCollateralMultiplier,
-		MaxStagingDealsBytes:              ldm.MaxStagingDealsBytes,
-		SimultaneousTransfersForStorage:   ldm.SimultaneousTransfersForStorage,
-		SimultaneousTransfersForRetrieval: ldm.SimultaneousTransfersForRetrieval,
-		StartEpochSealingBuffer:           ldm.StartEpochSealingBuffer,
-		Filter:                            ldm.Filter,
-		RetrievalFilter:                   ldm.RetrievalFilter,
-		RetrievalPricing:                  ldm.RetrievalPricing,
-	}
+	bdm.ConsiderOnlineStorageDeals = ldm.ConsiderOnlineStorageDeals
+	bdm.ConsiderOfflineStorageDeals = ldm.ConsiderOfflineStorageDeals
+	bdm.ConsiderOnlineRetrievalDeals = ldm.ConsiderOnlineRetrievalDeals
+	bdm.ConsiderOfflineRetrievalDeals = ldm.ConsiderOfflineRetrievalDeals
+	bdm.ConsiderVerifiedStorageDeals = ldm.ConsiderVerifiedStorageDeals
+	bdm.ConsiderUnverifiedStorageDeals = ldm.ConsiderUnverifiedStorageDeals
+	bdm.PieceCidBlocklist = ldm.PieceCidBlocklist
+	bdm.ExpectedSealDuration = config.Duration(ldm.ExpectedSealDuration)
+	bdm.MaxDealStartDelay = config.Duration(ldm.MaxDealStartDelay)
+	bdm.MaxProviderCollateralMultiplier = ldm.MaxProviderCollateralMultiplier
+	bdm.MaxStagingDealsBytes = ldm.MaxStagingDealsBytes
+	bdm.StartEpochSealingBuffer = ldm.StartEpochSealingBuffer
+	bdm.Filter = ldm.Filter
+	bdm.RetrievalFilter = ldm.RetrievalFilter
+	bdm.RetrievalPricing = ldm.RetrievalPricing
 }
 
 func getMarketsRepo(repoPath string) (lotus_repo.LockedRepo, error) {

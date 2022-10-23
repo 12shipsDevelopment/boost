@@ -87,6 +87,12 @@ const DealsListQuery = gql`
                     Size
                     Params
                 }
+                Transferred
+                TransferSamples {
+                    At
+                    Bytes
+                }
+                IsTransferStalled
                 Sector {
                     ID
                     Offset
@@ -100,8 +106,8 @@ const DealsListQuery = gql`
 `;
 
 const LegacyDealsListQuery = gql`
-    query AppLegacyDealsListQuery($cursor: ID, $offset: Int, $limit: Int) {
-        legacyDeals(cursor: $cursor, offset: $offset, limit: $limit) {
+    query AppLegacyDealsListQuery($query: String, $cursor: ID, $offset: Int, $limit: Int) {
+        legacyDeals(query: $query, cursor: $cursor, offset: $offset, limit: $limit) {
             deals {
                 ID
                 CreatedAt
@@ -300,6 +306,53 @@ const LegacyDealQuery = gql`
     }
 `;
 
+const PiecesWithPayloadCidQuery = gql`
+    query AppPiecesWithPayloadCidQuery($payloadCid: String!) {
+        piecesWithPayloadCid(payloadCid: $payloadCid)
+    }
+`;
+
+const PieceStatusQuery = gql`
+    query AppPieceStatusQuery($pieceCid: String!) {
+        pieceStatus(pieceCid: $pieceCid) {
+            PieceCid
+            IndexStatus {
+                Status
+                Error
+            }
+            Deals {
+                SealStatus {
+                    IsUnsealed
+                    Error
+                }
+                Deal {
+                    ID
+                    IsLegacy
+                    CreatedAt
+                    DealDataRoot
+                }
+                Sector {
+                    ID
+                    Offset
+                    Length
+                }
+            }
+            PieceInfoDeals {
+                ChainDealID
+                Sector {
+                    ID
+                    Offset
+                    Length
+                }
+                SealStatus {
+                    IsUnsealed
+                    Error
+                }
+            }
+        }
+    }
+`;
+
 const StorageQuery = gql`
     query AppStorageQuery {
         storage {
@@ -403,6 +456,24 @@ const TransfersQuery = gql`
         transfers {
             At
             Bytes
+        }
+    }
+`;
+
+const TransferStatsQuery = gql`
+    query AppTransferStatsQuery {
+        transferStats {
+            HttpMaxConcurrentDownloads
+            Stats {
+                Host
+                Total
+                Started
+                Stalled
+                TransferSamples {
+                    At
+                    Bytes
+                }
+            }
         }
     }
 `;
@@ -515,6 +586,8 @@ export {
     NewDealsSubscription,
     ProposalLogsListQuery,
     ProposalLogsCountQuery,
+    PiecesWithPayloadCidQuery,
+    PieceStatusQuery,
     StorageQuery,
     LegacyStorageQuery,
     FundsQuery,
@@ -524,6 +597,7 @@ export {
     FundsMoveToEscrow,
     StorageAskUpdate,
     TransfersQuery,
+    TransferStatsQuery,
     MpoolQuery,
     SealingPipelineQuery,
     Libp2pAddrInfoQuery,

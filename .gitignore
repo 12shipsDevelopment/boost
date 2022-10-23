@@ -2,6 +2,8 @@
 /boostx
 /boostd
 /devnet
+/booster-http
+/booster-bitswap
 /docgen-md
 /docgen-openrpc
 extern/filecoin-ffi/rust/target
@@ -19,5 +21,3 @@ dev.gen
 localnet.json
 lotus-daemon.log
 lotus-miner.log
-*.log
-*.car

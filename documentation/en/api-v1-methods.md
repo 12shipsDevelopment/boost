@@ -4,7 +4,12 @@
 * [Auth](#auth)
   * [AuthNew](#authnew)
   * [AuthVerify](#authverify)
+* [Blockstore](#blockstore)
+  * [BlockstoreGet](#blockstoreget)
+  * [BlockstoreGetSize](#blockstoregetsize)
+  * [BlockstoreHas](#blockstorehas)
 * [Boost](#boost)
+  * [BoostDagstoreDestroyShard](#boostdagstoredestroyshard)
   * [BoostDagstoreGC](#boostdagstoregc)
   * [BoostDagstoreInitializeAll](#boostdagstoreinitializeall)
   * [BoostDagstoreInitializeShard](#boostdagstoreinitializeshard)
@@ -46,6 +51,7 @@
   * [MarketListDataTransfers](#marketlistdatatransfers)
   * [MarketListIncompleteDeals](#marketlistincompletedeals)
   * [MarketListRetrievalDeals](#marketlistretrievaldeals)
+  * [MarketPendingDeals](#marketpendingdeals)
   * [MarketRestartDataTransfer](#marketrestartdatatransfer)
   * [MarketSetAsk](#marketsetask)
   * [MarketSetRetrievalAsk](#marketsetretrievalask)
@@ -63,8 +69,16 @@
   * [NetConnectedness](#netconnectedness)
   * [NetDisconnect](#netdisconnect)
   * [NetFindPeer](#netfindpeer)
+  * [NetLimit](#netlimit)
   * [NetPeerInfo](#netpeerinfo)
   * [NetPeers](#netpeers)
+  * [NetPing](#netping)
+  * [NetProtectAdd](#netprotectadd)
+  * [NetProtectList](#netprotectlist)
+  * [NetProtectRemove](#netprotectremove)
+  * [NetPubsubScores](#netpubsubscores)
+  * [NetSetLimit](#netsetlimit)
+  * [NetStat](#netstat)
 * [Pieces](#pieces)
   * [PiecesGetCIDInfo](#piecesgetcidinfo)
   * [PiecesGetMaxOffset](#piecesgetmaxoffset)
@@ -73,6 +87,8 @@
   * [PiecesListPieces](#pieceslistpieces)
 * [Runtime](#runtime)
   * [RuntimeSubsystems](#runtimesubsystems)
+* [Sectors](#sectors)
+  * [SectorsRefs](#sectorsrefs)
 ## Actor
 
 
@@ -128,8 +144,73 @@ Response:
 ]
 ```
 
+## Blockstore
+
+
+### BlockstoreGet
+There are not yet any comments for this method.
+
+Perms: read
+
+Inputs:
+```json
+[
+  {
+    "/": "bafy2bzacea3wsdh6y3a36tb3skempjoxqpuyompjbmfeyf34fi3uy6uue42v4"
+  }
+]
+```
+
+Response: `"Ynl0ZSBhcnJheQ=="`
+
+### BlockstoreGetSize
+
+
+Perms: read
+
+Inputs:
+```json
+[
+  {
+    "/": "bafy2bzacea3wsdh6y3a36tb3skempjoxqpuyompjbmfeyf34fi3uy6uue42v4"
+  }
+]
+```
+
+Response: `123`
+
+### BlockstoreHas
+
+
+Perms: read
+
+Inputs:
+```json
+[
+  {
+    "/": "bafy2bzacea3wsdh6y3a36tb3skempjoxqpuyompjbmfeyf34fi3uy6uue42v4"
+  }
+]
+```
+
+Response: `true`
+
 ## Boost
 
+
+### BoostDagstoreDestroyShard
+
+
+Perms: admin
+
+Inputs:
+```json
+[
+  "string value"
+]
+```
+
+Response: `{}`
 
 ### BoostDagstoreGC
 
@@ -969,6 +1050,44 @@ Response:
 ]
 ```
 
+### MarketPendingDeals
+
+
+Perms: write
+
+Inputs: `null`
+
+Response:
+```json
+{
+  "Deals": [
+    {
+      "Proposal": {
+        "PieceCID": {
+          "/": "bafy2bzacea3wsdh6y3a36tb3skempjoxqpuyompjbmfeyf34fi3uy6uue42v4"
+        },
+        "PieceSize": 1032,
+        "VerifiedDeal": true,
+        "Client": "f01234",
+        "Provider": "f01234",
+        "Label": "",
+        "StartEpoch": 10101,
+        "EndEpoch": 10101,
+        "StoragePricePerEpoch": "0",
+        "ProviderCollateral": "0",
+        "ClientCollateral": "0"
+      },
+      "ClientSignature": {
+        "Type": 2,
+        "Data": "Ynl0ZSBhcnJheQ=="
+      }
+    }
+  ],
+  "PublishPeriodStart": "0001-01-01T00:00:00Z",
+  "PublishPeriod": 60000000000
+}
+```
+
 ### MarketRestartDataTransfer
 
 
@@ -1265,6 +1384,32 @@ Response:
 }
 ```
 
+### NetLimit
+
+
+Perms: read
+
+Inputs:
+```json
+[
+  "string value"
+]
+```
+
+Response:
+```json
+{
+  "Memory": 9,
+  "Streams": 123,
+  "StreamsInbound": 123,
+  "StreamsOutbound": 123,
+  "Conns": 123,
+  "ConnsInbound": 123,
+  "ConnsOutbound": 123,
+  "FD": 123
+}
+```
+
 ### NetPeerInfo
 
 
@@ -1318,6 +1463,184 @@ Response:
     ]
   }
 ]
+```
+
+### NetPing
+
+
+Perms: read
+
+Inputs:
+```json
+[
+  "12D3KooWGzxzKZYveHXtpG6AsrUJBcWxHBFS2HsEoGTxrMLvKXtf"
+]
+```
+
+Response: `60000000000`
+
+### NetProtectAdd
+
+
+Perms: admin
+
+Inputs:
+```json
+[
+  [
+    "12D3KooWGzxzKZYveHXtpG6AsrUJBcWxHBFS2HsEoGTxrMLvKXtf"
+  ]
+]
+```
+
+Response: `{}`
+
+### NetProtectList
+
+
+Perms: read
+
+Inputs: `null`
+
+Response:
+```json
+[
+  "12D3KooWGzxzKZYveHXtpG6AsrUJBcWxHBFS2HsEoGTxrMLvKXtf"
+]
+```
+
+### NetProtectRemove
+
+
+Perms: admin
+
+Inputs:
+```json
+[
+  [
+    "12D3KooWGzxzKZYveHXtpG6AsrUJBcWxHBFS2HsEoGTxrMLvKXtf"
+  ]
+]
+```
+
+Response: `{}`
+
+### NetPubsubScores
+
+
+Perms: read
+
+Inputs: `null`
+
+Response:
+```json
+[
+  {
+    "ID": "12D3KooWGzxzKZYveHXtpG6AsrUJBcWxHBFS2HsEoGTxrMLvKXtf",
+    "Score": {
+      "Score": 12.3,
+      "Topics": {
+        "/blocks": {
+          "TimeInMesh": 60000000000,
+          "FirstMessageDeliveries": 122,
+          "MeshMessageDeliveries": 1234,
+          "InvalidMessageDeliveries": 3
+        }
+      },
+      "AppSpecificScore": 12.3,
+      "IPColocationFactor": 12.3,
+      "BehaviourPenalty": 12.3
+    }
+  }
+]
+```
+
+### NetSetLimit
+
+
+Perms: admin
+
+Inputs:
+```json
+[
+  "string value",
+  {
+    "Memory": 9,
+    "Streams": 123,
+    "StreamsInbound": 123,
+    "StreamsOutbound": 123,
+    "Conns": 123,
+    "ConnsInbound": 123,
+    "ConnsOutbound": 123,
+    "FD": 123
+  }
+]
+```
+
+Response: `{}`
+
+### NetStat
+
+
+Perms: read
+
+Inputs:
+```json
+[
+  "string value"
+]
+```
+
+Response:
+```json
+{
+  "System": {
+    "NumStreamsInbound": 123,
+    "NumStreamsOutbound": 123,
+    "NumConnsInbound": 123,
+    "NumConnsOutbound": 123,
+    "NumFD": 123,
+    "Memory": 9
+  },
+  "Transient": {
+    "NumStreamsInbound": 123,
+    "NumStreamsOutbound": 123,
+    "NumConnsInbound": 123,
+    "NumConnsOutbound": 123,
+    "NumFD": 123,
+    "Memory": 9
+  },
+  "Services": {
+    "abc": {
+      "NumStreamsInbound": 1,
+      "NumStreamsOutbound": 2,
+      "NumConnsInbound": 3,
+      "NumConnsOutbound": 4,
+      "NumFD": 5,
+      "Memory": 123
+    }
+  },
+  "Protocols": {
+    "abc": {
+      "NumStreamsInbound": 1,
+      "NumStreamsOutbound": 2,
+      "NumConnsInbound": 3,
+      "NumConnsOutbound": 4,
+      "NumFD": 5,
+      "Memory": 123
+    }
+  },
+  "Peers": {
+    "abc": {
+      "NumStreamsInbound": 1,
+      "NumStreamsOutbound": 2,
+      "NumConnsInbound": 3,
+      "NumConnsOutbound": 4,
+      "NumFD": 5,
+      "Memory": 123
+    }
+  }
+}
 ```
 
 ## Pieces
@@ -1451,5 +1774,28 @@ Response:
 [
   "Markets"
 ]
+```
+
+## Sectors
+
+
+### SectorsRefs
+
+
+Perms: read
+
+Inputs: `null`
+
+Response:
+```json
+{
+  "98000": [
+    {
+      "SectorID": 100,
+      "Offset": 10485760,
+      "Size": 1048576
+    }
+  ]
+}
 ```
 

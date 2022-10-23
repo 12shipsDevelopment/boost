@@ -4,11 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"time"
-
-	sealing "github.com/filecoin-project/lotus/extern/storage-sealing"
 
 	"github.com/filecoin-project/boost/storagemarket/types"
 	smtypes "github.com/filecoin-project/boost/storagemarket/types"
@@ -16,19 +13,16 @@ import (
 	"github.com/filecoin-project/boost/transport"
 	transporttypes "github.com/filecoin-project/boost/transport/types"
 	"github.com/filecoin-project/dagstore"
-	"github.com/filecoin-project/go-commp-utils/writer"
-	commcid "github.com/filecoin-project/go-fil-commcid"
-	commp "github.com/filecoin-project/go-fil-commp-hashhash"
 	"github.com/filecoin-project/go-fil-markets/piecestore"
 	"github.com/filecoin-project/go-fil-markets/stores"
 	"github.com/filecoin-project/go-padreader"
 	"github.com/filecoin-project/go-state-types/abi"
 	acrypto "github.com/filecoin-project/go-state-types/crypto"
 	lapi "github.com/filecoin-project/lotus/api"
+	sealing "github.com/filecoin-project/lotus/storage/pipeline"
 	"github.com/google/uuid"
-	"github.com/ipfs/go-cid"
 	carv2 "github.com/ipld/go-car/v2"
-	"github.com/libp2p/go-libp2p-core/event"
+	"github.com/libp2p/go-libp2p/core/event"
 )
 
 const (
@@ -117,15 +111,16 @@ func (p *Provider) execDeal(deal *smtypes.ProviderDealState, dh *dealHandler) *d
 		return derr
 	}
 
-	p.dealLogger.Infow(deal.DealUuid, "deal execution completed successfully")
 	// deal has been sent for sealing -> we can cleanup the deal state now and simply watch the deal on chain
 	// to wait for deal completion/slashing and update the state in DB accordingly.
 	p.cleanupDeal(deal)
 	p.dealLogger.Infow(deal.DealUuid, "finished deal cleanup after successful execution")
 
 	// Watch the sealing status of the deal and fire events for each change
+	p.dealLogger.Infow(deal.DealUuid, "watching deal sealing state changes")
 	p.fireSealingUpdateEvents(dh, deal.DealUuid, deal.SectorID)
 	p.cleanupDealHandler(deal.DealUuid)
+	p.dealLogger.Infow(deal.DealUuid, "deal sealing reached termination state")
 
 	// TODO
 	// Watch deal on chain and change state in DB and emit notifications.
@@ -149,35 +144,11 @@ func (p *Provider) execDealUptoAddPiece(ctx context.Context, deal *types.Provide
 				return derr
 			}
 
-			if err := p.transferAndVerify(dh.transferCtx, pub, deal); err != nil {
+			if err := p.transferAndVerify(dh, pub, deal); err != nil {
 				// The transfer has failed. If the user tries to cancel the
 				// transfer after this point it's a no-op.
 				dh.setCancelTransferResponse(nil)
 
-				// Pass through fatal errors
-				if err.retry == smtypes.DealRetryFatal {
-					return err
-				}
-
-				// If the transfer failed because the user cancelled the
-				// transfer, it's non-recoverable
-				if dh.TransferCancelledByUser() {
-					return &dealMakingError{
-						retry: types.DealRetryFatal,
-						error: fmt.Errorf("data transfer cancelled after %d bytes: %w", deal.NBytesReceived, err),
-					}
-				}
-
-				// If the transfer failed because boost was shut down, it's
-				// automatically recoverable
-				if errors.Is(err.error, context.Canceled) {
-					return &dealMakingError{
-						retry: types.DealRetryAuto,
-						error: fmt.Errorf("data transfer paused by boost shutdown after %d bytes: %w", deal.NBytesReceived, err),
-					}
-				}
-
-				// Pass through any other transfer failure
 				return err
 			}
 
@@ -191,10 +162,8 @@ func (p *Provider) execDealUptoAddPiece(ctx context.Context, deal *types.Provide
 	} else if deal.Checkpoint < dealcheckpoints.Transferred {
 		// verify CommP matches for an offline deal
 		if err := p.verifyCommP(deal); err != nil {
-			return &dealMakingError{
-				retry: types.DealRetryFatal,
-				error: fmt.Errorf("error when matching commP for imported data for offline deal: %w", err),
-			}
+			err.error = fmt.Errorf("error when matching commP for imported data for offline deal: %w", err)
+			return err
 		}
 		p.dealLogger.Infow(deal.DealUuid, "commp matched successfully for imported data for offline deal")
 
@@ -294,10 +263,42 @@ func (p *Provider) untagFundsAfterPublish(ctx context.Context, deal *types.Provi
 	}
 }
 
-func (p *Provider) transferAndVerify(ctx context.Context, pub event.Emitter, deal *types.ProviderDealState) *dealMakingError {
-	p.dealLogger.Infow(deal.DealUuid, "transferring deal data", "transfer client id", deal.Transfer.ClientID)
+func (p *Provider) transferAndVerify(dh *dealHandler, pub event.Emitter, deal *smtypes.ProviderDealState) *dealMakingError {
+	// Use a context specifically for transfers, that can be cancelled by the user
+	ctx := dh.transferCtx
 
-	tctx, cancel := context.WithDeadline(ctx, time.Now().Add(p.config.MaxTransferDuration))
+	p.dealLogger.Infow(deal.DealUuid, "deal queued for transfer", "transfer client id", deal.Transfer.ClientID)
+
+	// Wait for a spot in the transfer queue
+	err := p.xferLimiter.waitInQueue(ctx, deal)
+	if err != nil {
+		// If the transfer failed because the user cancelled the
+		// transfer, it's non-recoverable
+		if dh.TransferCancelledByUser() {
+			return &dealMakingError{
+				retry: types.DealRetryFatal,
+				error: fmt.Errorf("data transfer manually cancelled by user: %w", err),
+			}
+		}
+
+		// If boost was shutdown while waiting for the transfer to start,
+		// automatically retry on restart.
+		if errors.Is(err, context.Canceled) {
+			return &dealMakingError{
+				retry: smtypes.DealRetryAuto,
+				error: fmt.Errorf("boost shutdown while waiting to start transfer for deal %s: %w", deal.DealUuid, err),
+			}
+		}
+		return &dealMakingError{
+			retry: smtypes.DealRetryFatal,
+			error: fmt.Errorf("queued transfer failed to start for deal %s: %w", deal.DealUuid, err),
+		}
+	}
+	defer p.xferLimiter.complete(deal.DealUuid)
+
+	p.dealLogger.Infow(deal.DealUuid, "start deal data transfer", "transfer client id", deal.Transfer.ClientID)
+	transferStart := time.Now()
+	tctx, cancel := context.WithDeadline(ctx, transferStart.Add(p.config.MaxTransferDuration))
 	defer cancel()
 
 	st := time.Now()
@@ -315,50 +316,55 @@ func (p *Provider) transferAndVerify(ctx context.Context, pub event.Emitter, dea
 
 	// wait for data-transfer to finish
 	if err := p.waitForTransferFinish(tctx, handler, pub, deal); err != nil {
+		// If the transfer failed because the user cancelled the
+		// transfer, it's non-recoverable
+		if dh.TransferCancelledByUser() {
+			return &dealMakingError{
+				retry: types.DealRetryFatal,
+				error: fmt.Errorf("data transfer manually cancelled by user after %d bytes: %w", deal.NBytesReceived, err),
+			}
+		}
+
+		// If the transfer failed because boost was shut down, it's
+		// automatically recoverable
+		if errors.Is(err, context.Canceled) && time.Since(transferStart) < p.config.MaxTransferDuration {
+			return &dealMakingError{
+				retry: types.DealRetryAuto,
+				error: fmt.Errorf("data transfer paused by boost shutdown after %d bytes: %w", deal.NBytesReceived, err),
+			}
+		}
+
 		// Note that the data transfer has automatic retries built in, so if
 		// it fails, it means it's already retried several times and we should
-		// surface the problem to the user so they can decide manually whether
-		// to keep retrying
+		// fail the deal
 		return &dealMakingError{
-			retry: smtypes.DealRetryManual,
+			retry: smtypes.DealRetryFatal,
 			error: fmt.Errorf("data-transfer failed: %w", err),
 		}
 	}
+
+	// Make room in the transfer queue for the next transfer
+	p.xferLimiter.complete(deal.DealUuid)
+
 	p.dealLogger.Infow(deal.DealUuid, "deal data-transfer completed successfully", "bytes received", deal.NBytesReceived, "time taken",
 		time.Since(st).String())
 
 	// Verify CommP matches
 	if err := p.verifyCommP(deal); err != nil {
-		return &dealMakingError{
-			retry: smtypes.DealRetryFatal,
-			error: fmt.Errorf("failed to verify CommP: %w", err),
-		}
+		err.error = fmt.Errorf("failed to verify CommP: %w", err.error)
+		return err
 	}
 
 	p.dealLogger.Infow(deal.DealUuid, "commP matched successfully: deal-data verified")
 	return p.updateCheckpoint(pub, deal, dealcheckpoints.Transferred)
 }
 
-func (p *Provider) verifyCommP(deal *types.ProviderDealState) error {
-	p.dealLogger.Infow(deal.DealUuid, "checking commP")
-	pieceCid, err := GeneratePieceCommitment(deal.InboundFilePath, deal.ClientDealProposal.Proposal.PieceSize)
-	if err != nil {
-		return fmt.Errorf("failed to generate CommP: %w", err)
-	}
-
-	clientPieceCid := deal.ClientDealProposal.Proposal.PieceCID
-	if pieceCid != clientPieceCid {
-		return fmt.Errorf("commP mismatch, expected=%s, actual=%s", clientPieceCid, pieceCid)
-	}
-
-	return nil
-}
-
 func (p *Provider) waitForTransferFinish(ctx context.Context, handler transport.Handler, pub event.Emitter, deal *types.ProviderDealState) error {
 	defer handler.Close()
 	defer p.transfers.complete(deal.DealUuid)
-	var lastOutputPct int64
 
+	// log transfer progress to the deal log every 10%
+	var lastOutputPct int64
 	logTransferProgress := func(received int64) {
 		pct := (100 * received) / int64(deal.Transfer.Size)
 		outputPct := pct / 10
@@ -380,6 +386,7 @@ func (p *Provider) waitForTransferFinish(ctx context.Context, handler transport.
 			}
 			deal.NBytesReceived = evt.NBytesReceived
 			p.transfers.setBytes(deal.DealUuid, uint64(evt.NBytesReceived))
+			p.xferLimiter.setBytes(deal.DealUuid, uint64(evt.NBytesReceived))
 			p.fireEventDealUpdate(pub, deal)
 			logTransferProgress(deal.NBytesReceived)
 
@@ -387,80 +394,6 @@ func (p *Provider) waitForTransferFinish(ctx context.Context, handler transport.
 			return ctx.Err()
 		}
 	}
-}
-
-// GenerateCommP
-func GenerateCommP(filepath string) (cidAndSize *writer.DataCIDSize, finalErr error) {
-	rd, err := carv2.OpenReader(filepath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get CARv2 reader: %w", err)
-	}
-
-	defer func() {
-		if err := rd.Close(); err != nil {
-			if finalErr == nil {
-				cidAndSize = nil
-				finalErr = fmt.Errorf("failed to close CARv2 reader: %w", err)
-				return
-			}
-		}
-	}()
-
-	// dump the CARv1 payload of the CARv2 file to the Commp Writer and get back the CommP.
-	w := &writer.Writer{}
-	written, err := io.Copy(w, rd.DataReader())
-	if err != nil {
-		return nil, fmt.Errorf("failed to write to CommP writer: %w", err)
-	}
-
-	var size int64
-	switch rd.Version {
-	case 2:
-		size = int64(rd.Header.DataSize)
-	case 1:
-		st, err := os.Stat(filepath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to stat CARv1 file: %w", err)
-		}
-		size = st.Size()
-	}
-
-	if written != size {
-		return nil, fmt.Errorf("number of bytes written to CommP writer %d not equal to the CARv1 payload size %d", written, rd.Header.DataSize)
-	}
-
-	cidAndSize = &writer.DataCIDSize{}
-	*cidAndSize, err = w.Sum()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get CommP: %w", err)
-	}
-
-	return cidAndSize, nil
-}
-
-// GeneratePieceCommitment generates the pieceCid for the CARv1 deal payload in
-// the CARv2 file that already exists at the given path.
-func GeneratePieceCommitment(filepath string, dealSize abi.PaddedPieceSize) (c cid.Cid, finalErr error) {
-	cidAndSize, err := GenerateCommP(filepath)
-	if err != nil {
-		return cid.Undef, err
-	}
-
-	if cidAndSize.PieceSize < dealSize {
-		// need to pad up!
-		rawPaddedCommp, err := commp.PadCommP(
-			// we know how long a pieceCid "hash" is, just blindly extract the trailing 32 bytes
-			cidAndSize.PieceCID.Hash()[len(cidAndSize.PieceCID.Hash())-32:],
-			uint64(cidAndSize.PieceSize),
-			uint64(dealSize),
-		)
-		if err != nil {
-			return cid.Undef, fmt.Errorf("failed to pad data: %w", err)
-		}
-		cidAndSize.PieceCID, _ = commcid.DataCommitmentV1ToCID(rawPaddedCommp)
-	}
-
-	return cidAndSize.PieceCID, err
 }
 
 func (p *Provider) publishDeal(ctx context.Context, pub event.Emitter, deal *types.ProviderDealState) *dealMakingError {
@@ -588,7 +521,14 @@ func (p *Provider) addPiece(ctx context.Context, pub event.Emitter, deal *types.
 
 	// Inflate the deal size so that it exactly fills a piece
 	proposal := deal.ClientDealProposal.Proposal
-	paddedReader, err := padreader.NewInflator(v2r.DataReader(), size, proposal.PieceSize.Unpadded())
+	r, err := v2r.DataReader()
+	if err != nil {
+		return &dealMakingError{
+			retry: types.DealRetryFatal,
+			error: fmt.Errorf("failed to get data reader over CAR file: %w", err),
+		}
+	}
+	paddedReader, err := padreader.NewInflator(r, size, proposal.PieceSize.Unpadded())
 	if err != nil {
 		return &dealMakingError{
 			retry: types.DealRetryFatal,
@@ -699,6 +639,7 @@ func (p *Provider) fireSealingUpdateEvents(dh *dealHandler, dealUuid uuid.UUID, 
 				return si.State
 			}
 
+			p.dealLogger.Infow(dealUuid, "current sealing state", "state", si.State)
 			p.fireEventDealUpdate(dh.Publisher, deal)
 		}
 		return si.State

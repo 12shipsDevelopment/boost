@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/filecoin-project/lotus/lib/tablewriter"
+	"github.com/ipfs/go-cid"
 
 	"github.com/fatih/color"
 	bapi "github.com/filecoin-project/boost/api"
@@ -24,6 +25,8 @@ var dagstoreCmd = &cli.Command{
 		dagstoreInitializeAllCmd,
 		dagstoreListShardsCmd,
 		dagstoreGcCmd,
+		dagstoreDestroyShardCmd,
+		dagstoreLookupCmd,
 	},
 }
 
@@ -267,5 +270,88 @@ var dagstoreRecoverShardCmd = &cli.Command{
 		ctx := lcli.ReqContext(cctx)
 
 		return napi.BoostDagstoreRecoverShard(ctx, cctx.Args().First())
+	},
+}
+
+var dagstoreDestroyShardCmd = &cli.Command{
+	Name:      "destroy-shard",
+	ArgsUsage: "[key]",
+	Usage:     "Destroy a shard",
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:        "color",
+			Usage:       "use color in display output",
+			DefaultText: "depends on output being a TTY",
+		},
+	},
+	Action: func(cctx *cli.Context) error {
+		if cctx.IsSet("color") {
+			color.NoColor = !cctx.Bool("color")
+		}
+
+		if cctx.NArg() != 1 {
+			return fmt.Errorf("must provide a single shard key")
+		}
+
+		napi, closer, err := bcli.GetBoostAPI(cctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		ctx := lcli.ReqContext(cctx)
+
+		shardKey := cctx.Args().First()
+		err = napi.BoostDagstoreDestroyShard(ctx, shardKey)
+		if err != nil {
+			return err
+		}
+
+		fmt.Println("Destroyed shard " + shardKey)
+		return nil
+	},
+}
+
+var dagstoreLookupCmd = &cli.Command{
+	Name:      "lookup-piece-cid",
+	ArgsUsage: "[key]",
+	Usage:     "Performs a reverse lookup with payload CID to get Piece CID",
+	Aliases:   []string{"lpc"},
+	Flags: []cli.Flag{
+		&cli.BoolFlag{
+			Name:        "color",
+			Usage:       "use color in display output",
+			DefaultText: "depends on output being a TTY",
+		},
+	},
+	Action: func(cctx *cli.Context) error {
+		if cctx.IsSet("color") {
+			color.NoColor = !cctx.Bool("color")
+		}
+
+		if cctx.NArg() != 1 {
+			return fmt.Errorf("must provide a single payload CID")
+		}
+
+		napi, closer, err := bcli.GetBoostAPI(cctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		ctx := lcli.ReqContext(cctx)
+
+		shardKey := cctx.Args().First()
+		payloadCid, err := cid.Parse(shardKey)
+		if err != nil {
+			return fmt.Errorf("Unable to parse the provided CID: %s", shardKey)
+		}
+		pieceCid, err := napi.BoostDagstorePiecesContainingMultihash(ctx, payloadCid.Hash())
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Given CID was found in the following pieces: %s", pieceCid)
+		return nil
 	},
 }
