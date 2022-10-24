@@ -5,15 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/multiformats/go-multihash"
 	"net/http"
 	"sort"
+
+	tracing "github.com/filecoin-project/boost/tracing"
+	"github.com/multiformats/go-multihash"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/filecoin-project/go-fil-markets/stores"
 
 	"github.com/filecoin-project/boost/api"
 	"github.com/filecoin-project/boost/gql"
 	"github.com/filecoin-project/boost/indexprovider"
+	"github.com/filecoin-project/boost/node/modules/dtypes"
 	"github.com/filecoin-project/boost/sealingpipeline"
 	"github.com/filecoin-project/boost/storagemarket"
 	"github.com/filecoin-project/boost/storagemarket/types"
@@ -30,7 +34,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
 	logging "github.com/ipfs/go-log/v2"
-	"github.com/libp2p/go-libp2p-core/host"
+	"github.com/libp2p/go-libp2p/core/host"
 	"go.uber.org/fx"
 )
 
@@ -43,14 +47,12 @@ type BoostAPI struct {
 	api.Net
 
 	Full lapi.FullNode
-	//LocalStore  *stores.Local
-	//RemoteStore *stores.Remote
 
 	Host host.Host
 
-	DAGStore        *dagstore.DAGStore
-	DagStoreWrapper *mktsdagstore.Wrapper
-
+	DAGStore              *dagstore.DAGStore
+	DagStoreWrapper       *mktsdagstore.Wrapper
+	IndexBackedBlockstore dtypes.IndexBackedBlockstore
 	// Boost
 	StorageProvider *storagemarket.Provider
 	IndexProvider   *indexprovider.Wrapper
@@ -69,9 +71,12 @@ type BoostAPI struct {
 
 	// Sealing Pipeline API
 	Sps sealingpipeline.API
-	// TODO: Figure out how to start graphql server without it needing
-	// to be a dependency of another fx object
+
+	// GraphSQL server
 	GraphqlServer *gql.Server
+
+	// Tracing
+	Tracing *tracing.Tracing
 
 	DS lotus_dtypes.MetadataDS
 
@@ -112,10 +117,16 @@ func (sm *BoostAPI) ServeRemote(perm bool) func(w http.ResponseWriter, r *http.R
 }
 
 func (sm *BoostAPI) BoostDummyDeal(ctx context.Context, params types.DealParams) (*api.ProviderDealRejectionInfo, error) {
-	return sm.StorageProvider.ExecuteDeal(&params, "dummy")
+	return sm.StorageProvider.ExecuteDeal(ctx, &params, "dummy")
 }
 
 func (sm *BoostAPI) BoostDeal(ctx context.Context, dealUuid uuid.UUID) (*types.ProviderDealState, error) {
+	// TODO: Use a middleware function that wraps the entire api implementation for all RPC calls
+	// Testing for now until a middleware function is created
+	ctx, span := tracing.Tracer.Start(ctx, "BoostAPI.BoostDeal")
+	defer span.End()
+	span.SetAttributes(attribute.String("dealUuid", dealUuid.String())) // Example of adding additional attributes
+
 	return sm.StorageProvider.Deal(ctx, dealUuid)
 }
 
@@ -127,8 +138,8 @@ func (sm *BoostAPI) BoostIndexerAnnounceAllDeals(ctx context.Context) error {
 	return sm.IndexProvider.IndexerAnnounceAllDeals(ctx)
 }
 
-func (sm *BoostAPI) BoostOfflineDealWithData(_ context.Context, dealUuid uuid.UUID, filePath string) (*api.ProviderDealRejectionInfo, error) {
-	res, err := sm.StorageProvider.ImportOfflineDealData(dealUuid, filePath)
+func (sm *BoostAPI) BoostOfflineDealWithData(ctx context.Context, dealUuid uuid.UUID, filePath string) (*api.ProviderDealRejectionInfo, error) {
+	res, err := sm.StorageProvider.ImportOfflineDealData(ctx, dealUuid, filePath)
 	return res, err
 }
 
@@ -186,6 +197,10 @@ func (sm *BoostAPI) BoostDagstoreListShards(ctx context.Context) ([]api.Dagstore
 }
 
 func (sm *BoostAPI) BoostDagstorePiecesContainingMultihash(ctx context.Context, mh multihash.Multihash) ([]cid.Cid, error) {
+	ctx, span := tracing.Tracer.Start(ctx, "Boost.BoostDagstorePiecesContainingMultihash")
+	span.SetAttributes(attribute.String("multihash", mh.String()))
+	defer span.End()
+
 	if sm.DAGStore == nil {
 		return nil, fmt.Errorf("dagstore not available on this node")
 	}
@@ -445,4 +460,42 @@ func (sm *BoostAPI) BoostDagstoreRecoverShard(ctx context.Context, key string) e
 	}
 
 	return res.Error
+}
+
+func (sm *BoostAPI) BoostDagstoreDestroyShard(ctx context.Context, key string) error {
+	if sm.DAGStore == nil {
+		return fmt.Errorf("dagstore not available on this node")
+	}
+
+	// First check if the shard has already been registered
+	k := shard.KeyFromString(key)
+	_, err := sm.DAGStore.GetShardInfo(k)
+	if err != nil {
+		return fmt.Errorf("unable to query dagstore for shard info: %w", err)
+	}
+
+	pieceCid, err := cid.Parse(key)
+	if err != nil {
+		return fmt.Errorf("parsing shard key as piece cid: %w", err)
+	}
+	if err = stores.DestroyShardSync(ctx, sm.DagStoreWrapper, pieceCid); err != nil {
+		return fmt.Errorf("failed to destroy shard: %w", err)
+	}
+	return nil
+}
+
+func (sm *BoostAPI) BlockstoreGet(ctx context.Context, c cid.Cid) ([]byte, error) {
+	blk, err := sm.IndexBackedBlockstore.Get(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return blk.RawData(), nil
+}
+
+func (sm *BoostAPI) BlockstoreHas(ctx context.Context, c cid.Cid) (bool, error) {
+	return sm.IndexBackedBlockstore.Has(ctx, c)
+}
+
+func (sm *BoostAPI) BlockstoreGetSize(ctx context.Context, c cid.Cid) (int, error) {
+	return sm.IndexBackedBlockstore.GetSize(ctx, c)
 }

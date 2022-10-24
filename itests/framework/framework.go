@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"math/rand"
 	"os"
+	"path"
 	"sync"
 	"testing"
 	"time"
@@ -26,8 +27,9 @@ import (
 	lotus_storagemarket "github.com/filecoin-project/go-fil-markets/storagemarket"
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/big"
-	"github.com/filecoin-project/go-state-types/builtin/v8/market"
-	minertypes "github.com/filecoin-project/go-state-types/builtin/v8/miner"
+	"github.com/filecoin-project/go-state-types/builtin"
+	"github.com/filecoin-project/go-state-types/builtin/v9/market"
+	minertypes "github.com/filecoin-project/go-state-types/builtin/v9/miner"
 	"github.com/filecoin-project/go-state-types/exitcode"
 	lapi "github.com/filecoin-project/lotus/api"
 	"github.com/filecoin-project/lotus/api/v1api"
@@ -35,8 +37,6 @@ import (
 	"github.com/filecoin-project/lotus/chain/actors"
 	chaintypes "github.com/filecoin-project/lotus/chain/types"
 	ltypes "github.com/filecoin-project/lotus/chain/types"
-	"github.com/filecoin-project/lotus/extern/sector-storage/stores"
-	"github.com/filecoin-project/lotus/extern/storage-sealing/sealiface"
 	"github.com/filecoin-project/lotus/itests/kit"
 	lnode "github.com/filecoin-project/lotus/node"
 	lotus_config "github.com/filecoin-project/lotus/node/config"
@@ -44,8 +44,9 @@ import (
 	lotus_dtypes "github.com/filecoin-project/lotus/node/modules/dtypes"
 	"github.com/filecoin-project/lotus/node/modules/lp2p"
 	lotus_repo "github.com/filecoin-project/lotus/node/repo"
-	"github.com/filecoin-project/lotus/storage"
-	"github.com/filecoin-project/specs-actors/v8/actors/builtin"
+	"github.com/filecoin-project/lotus/storage/ctladdr"
+	"github.com/filecoin-project/lotus/storage/paths"
+	"github.com/filecoin-project/lotus/storage/pipeline/sealiface"
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
@@ -57,7 +58,7 @@ import (
 	unixfile "github.com/ipfs/go-unixfs/file"
 	"github.com/ipld/go-car"
 	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p-core/host"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 )
@@ -79,12 +80,11 @@ type TestFramework struct {
 }
 
 func NewTestFramework(ctx context.Context, t *testing.T) *TestFramework {
-	tempHome, _ := ioutil.TempDir("", "boost-tests-")
 	fullNode, miner := FullNodeAndMiner(t)
 
 	return &TestFramework{
 		ctx:        ctx,
-		HomeDir:    tempHome,
+		HomeDir:    t.TempDir(),
 		FullNode:   fullNode,
 		LotusMiner: miner,
 	}
@@ -226,7 +226,7 @@ func (f *TestFramework) Start() error {
 	// The in-memory repo implementation assumes that its being used to test
 	// a miner, which has storage configuration.
 	// Boost doesn't have storage configuration so clear the storage config.
-	if err := lr.SetStorage(func(sc *stores.StorageConfig) {
+	if err := lr.SetStorage(func(sc *paths.StorageConfig) {
 		sc.StoragePaths = nil
 	}); err != nil {
 		return fmt.Errorf("set storage config: %w", err)
@@ -265,10 +265,17 @@ func (f *TestFramework) Start() error {
 	cfg.SealerApiInfo = apiInfo
 	cfg.Wallets.Miner = minerAddr.String()
 	cfg.Wallets.PublishStorageDeals = psdWalletAddr.String()
-	cfg.Dealmaking.PublishMsgMaxDealsPerMsg = 1
-	cfg.Dealmaking.PublishMsgPeriod = config.Duration(0)
-	cfg.Dealmaking.PublishMsgMaxFee = ltypes.FIL(big.NewInt(1000))
+	cfg.LotusDealmaking.MaxDealsPerPublishMsg = 1
+	cfg.LotusDealmaking.PublishMsgPeriod = lotus_config.Duration(0)
+	val, err := ltypes.ParseFIL("0.1 FIL")
+	if err != nil {
+		return err
+	}
+	cfg.LotusFees.MaxPublishDealsFee = val
 	cfg.Dealmaking.MaxStagingDealsBytes = 4000000 // 4 MB
+	cfg.Dealmaking.RemoteCommp = true
+	// No transfers will start until the first stall check period has elapsed
+	cfg.Dealmaking.HttpTransferStallCheckPeriod = config.Duration(100 * time.Millisecond)
 	cfg.Storage.ParallelFetchLimit = 10
 
 	err = lr.SetConfig(func(raw interface{}) {
@@ -294,7 +301,7 @@ func (f *TestFramework) Start() error {
 		node.Repo(r),
 		node.Override(new(v1api.FullNode), fullnodeApi),
 
-		node.Override(new(*storage.AddressSelector), modules.AddressSelector(&lotus_config.MinerAddressConfig{
+		node.Override(new(*ctladdr.AddressSelector), modules.AddressSelector(&lotus_config.MinerAddressConfig{
 			DealPublishControl: []string{
 				psdWalletAddr.String(),
 			},
@@ -487,7 +494,7 @@ func (f *TestFramework) MakeDummyDeal(dealUuid uuid.UUID, carFilepath string, ro
 	}
 	proposal := market.DealProposal{
 		PieceCID:             cidAndSize.PieceCID,
-		PieceSize:            cidAndSize.PieceSize,
+		PieceSize:            cidAndSize.Size,
 		VerifiedDeal:         false,
 		Client:               f.ClientAddr,
 		Provider:             f.MinerAddr,
@@ -651,7 +658,7 @@ func (f *TestFramework) WaitDealSealed(ctx context.Context, deal *cid.Cid) error
 	}
 }
 
-func (f *TestFramework) Retrieve(ctx context.Context, t *testing.T, deal *cid.Cid, root cid.Cid, carExport bool) (path string) {
+func (f *TestFramework) Retrieve(ctx context.Context, t *testing.T, deal *cid.Cid, root cid.Cid, carExport bool) string {
 	// perform retrieval.
 	info, err := f.FullNode.ClientGetDealInfo(ctx, *deal)
 	require.NoError(t, err)
@@ -660,7 +667,8 @@ func (f *TestFramework) Retrieve(ctx context.Context, t *testing.T, deal *cid.Ci
 	require.NoError(t, err)
 	require.NotEmpty(t, offers, "no offers")
 
-	carFile, err := ioutil.TempFile(f.HomeDir, "ret-car")
+	p := path.Join(t.TempDir(), "ret-car-"+t.Name())
+	carFile, err := os.Create(p)
 	require.NoError(t, err)
 
 	defer carFile.Close() //nolint:errcheck
@@ -710,15 +718,13 @@ consumeEvents:
 
 	ret := carFile.Name()
 	if carExport {
-		actualFile := f.ExtractFileFromCAR(ctx, t, carFile)
-		ret = actualFile.Name()
-		_ = actualFile.Close() //nolint:errcheck
+		ret = f.ExtractFileFromCAR(ctx, t, carFile)
 	}
 
 	return ret
 }
 
-func (f *TestFramework) ExtractFileFromCAR(ctx context.Context, t *testing.T, file *os.File) (out *os.File) {
+func (f *TestFramework) ExtractFileFromCAR(ctx context.Context, t *testing.T, file *os.File) string {
 	bserv := dstest.Bserv()
 	ch, err := car.LoadCar(ctx, bserv.Blockstore(), file)
 	require.NoError(t, err)
@@ -733,13 +739,9 @@ func (f *TestFramework) ExtractFileFromCAR(ctx context.Context, t *testing.T, fi
 	fil, err := unixfile.NewUnixfsFile(ctx, dserv, nd)
 	require.NoError(t, err)
 
-	tmpfile, err := ioutil.TempFile(f.HomeDir, "file-in-car")
+	tmpFile := path.Join(t.TempDir(), fmt.Sprintf("file-in-car-%d", rand.Uint32()))
+	err = files.WriteTo(fil, tmpFile)
 	require.NoError(t, err)
 
-	defer tmpfile.Close() //nolint:errcheck
-
-	err = files.WriteTo(fil, tmpfile.Name())
-	require.NoError(t, err)
-
-	return tmpfile
+	return tmpFile
 }
