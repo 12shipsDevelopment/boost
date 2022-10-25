@@ -1,0 +1,135 @@
+#########################################################################################
+## docker will invoke this file from ../../.. dir in order to access the code
+#########################################################################################
+ARG LOTUS_TEST_IMAGE=filecoin/lotus-test:latest
+FROM ${LOTUS_TEST_IMAGE} as lotus-dev
+#########################################################################################
+FROM node:16.16-alpine3.15 AS react-builder
+
+WORKDIR /src
+COPY react /src/react
+COPY gql /src/gql
+
+RUN npm_config_legacy_peer_deps=yes npm ci --no-audit --prefix react&& \
+      npm run --prefix react build
+#########################################################################################
+FROM golang:1.18-bullseye as builder
+
+RUN apt update && apt install -y \
+      build-essential \
+      bzr pkg-config \
+      clang \
+      curl \
+      gcc git \
+      hwloc \
+      jq \
+      libhwloc-dev wget \
+      mesa-opencl-icd \
+      ocl-icd-opencl-dev
+
+WORKDIR /go/src/
+
+COPY Makefile /go/src/
+##############################################
+# prebuild filecoin-ffi
+COPY extern /go/src/extern
+COPY build /go/src/build
+COPY .git/modules/extern/filecoin-ffi /go/src/.git/modules/extern/filecoin-ffi
+
+RUN make build/.filecoin-install
+##############################################
+COPY . /go/src
+##############################################
+COPY --from=react-builder /src/react/build /go/src/react/build
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+      make debug booster-http booster-bitswap
+#########################################################################################
+FROM ubuntu:20.04 as runner
+
+RUN apt update && apt install -y \
+      curl \
+      hwloc \
+      jq
+
+## Fix missing lib libhwloc.so.5
+RUN ls -1 /lib/*/libhwloc.so.* | head -n 1 | xargs -n1 -I {} ln -s {} /lib/libhwloc.so.5
+
+WORKDIR /app
+
+COPY --from=lotus-dev /usr/local/bin/lotus /usr/local/bin/
+COPY --from=lotus-dev /usr/local/bin/lotus-miner /usr/local/bin/
+## Test lotus starts
+RUN lotus -v && lotus-miner -v 
+#########################################################################################
+FROM runner as boost-dev
+
+ARG BUILD_VERSION=0.1
+
+LABEL org.opencontainers.image.version=$BUILD_VERSION \
+      org.opencontainers.image.authors="Boost Dev Team" \
+      name="boost-dev" \
+      maintainer="Boost Dev Team" \
+      vendor="Boost Dev Team" \
+      version=$BUILD_VERSION \
+      release=$BUILD_VERSION \
+      summary="This image is used to host the boost-dev storage provider" \
+      description="This image is used to host the boost-dev storage provider" 
+
+ENV BOOST_PATH /var/lib/boost
+VOLUME /var/lib/boost
+EXPOSE 8080  
+
+COPY --from=builder /go/src/boostd /usr/local/bin/
+COPY --from=builder /go/src/boost /usr/local/bin/
+COPY --from=builder /go/src/boostx /usr/local/bin/
+COPY docker/devnet/boost/entrypoint.sh /app/
+COPY docker/devnet/boost/sample/* /app/sample/
+RUN boost -v 
+
+ENTRYPOINT ["./entrypoint.sh"]
+#########################################################################################
+FROM runner as booster-http-dev
+
+ARG BUILD_VERSION=0.1
+
+LABEL org.opencontainers.image.version=$BUILD_VERSION \
+      org.opencontainers.image.authors="Boost Dev Team" \
+      name="booster-http-dev" \
+      maintainer="Boost Dev Team" \
+      vendor="Boost Dev Team" \
+      version=$BUILD_VERSION \
+      release=$BUILD_VERSION \
+      summary="This image is used to host booster-http-dev" \
+      description="This image is used to host booster-http-dev" 
+
+EXPOSE 7777  
+
+COPY --from=builder /go/src/boostd /usr/local/bin/
+COPY --from=builder /go/src/booster-http /usr/local/bin/
+COPY docker/devnet/booster-http/entrypoint.sh /app/
+
+ENTRYPOINT ["./entrypoint.sh"]
+#########################################################################################
+FROM runner as booster-bitswap-dev
+
+ARG BUILD_VERSION=0.1
+
+LABEL org.opencontainers.image.version=$BUILD_VERSION \
+      org.opencontainers.image.authors="Boost Dev Team" \
+      name="booster-bitswap-dev" \
+      maintainer="Boost Dev Team" \
+      vendor="Boost Dev Team" \
+      version=$BUILD_VERSION \
+      release=$BUILD_VERSION \
+      summary="This image is used to host booster-bitswap-dev" \
+      description="This image is used to host booster-bitswap-dev" 
+
+EXPOSE 8888
+
+COPY --from=builder /go/src/boostd /usr/local/bin/
+COPY --from=builder /go/src/booster-bitswap /usr/local/bin/
+COPY docker/devnet/booster-bitswap/entrypoint.sh /app/
+
+ENTRYPOINT ["./entrypoint.sh"]

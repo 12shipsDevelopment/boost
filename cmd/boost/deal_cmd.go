@@ -15,20 +15,19 @@ import (
 	cborutil "github.com/filecoin-project/go-cbor-util"
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/big"
-	"github.com/filecoin-project/go-state-types/builtin/v8/market"
+	"github.com/filecoin-project/go-state-types/builtin/v9/market"
 	"github.com/filecoin-project/lotus/api"
 	chain_types "github.com/filecoin-project/lotus/chain/types"
 	lcli "github.com/filecoin-project/lotus/cli"
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
-	inet "github.com/libp2p/go-libp2p-core/network"
+	inet "github.com/libp2p/go-libp2p/core/network"
 	"github.com/urfave/cli/v2"
 )
 
 const DealProtocolv120 = "/fil/storage/mk/1.2.0"
 
 var dealFlags = []cli.Flag{
-	cmd.FlagRepo,
 	&cli.StringFlag{
 		Name:     "provider",
 		Usage:    "storage provider on-chain address",
@@ -148,6 +147,15 @@ func dealCmdAction(cctx *cli.Context, isOnline bool) error {
 
 	if err := n.Host.Connect(ctx, *addrInfo); err != nil {
 		return fmt.Errorf("failed to connect to peer %s: %w", addrInfo.ID, err)
+	}
+
+	x, err := n.Host.Peerstore().FirstSupportedProtocol(addrInfo.ID, DealProtocolv120)
+	if err != nil {
+		return fmt.Errorf("getting protocols for peer %s: %w", addrInfo.ID, err)
+	}
+
+	if len(x) == 0 {
+		return fmt.Errorf("boost client cannot make a deal with storage provider %s because it does not support protocol version 1.2.0", maddr)
 	}
 
 	dealUuid := uuid.New()

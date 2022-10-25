@@ -16,6 +16,9 @@ import (
 	"github.com/filecoin-project/boost/storagemarket/types"
 	"github.com/filecoin-project/boost/storagemarket/types/dealcheckpoints"
 	"github.com/filecoin-project/boost/transport"
+	"github.com/filecoin-project/dagstore"
+	"github.com/filecoin-project/go-fil-markets/piecestore"
+	"github.com/filecoin-project/go-fil-markets/retrievalmarket"
 	lotus_storagemarket "github.com/filecoin-project/go-fil-markets/storagemarket"
 	"github.com/filecoin-project/lotus/api/v1api"
 	"github.com/filecoin-project/lotus/markets/storageadapter"
@@ -24,8 +27,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/graph-gophers/graphql-go"
 	"github.com/ipfs/go-cid"
-	"github.com/libp2p/go-libp2p-core/event"
-	"github.com/libp2p/go-libp2p-core/host"
+	"github.com/libp2p/go-libp2p/core/event"
+	"github.com/libp2p/go-libp2p/core/host"
 )
 
 type dealListResolver struct {
@@ -49,12 +52,15 @@ type resolver struct {
 	provider   *storagemarket.Provider
 	legacyProv lotus_storagemarket.StorageProvider
 	legacyDT   lotus_dtypes.ProviderDataTransfer
+	ps         piecestore.PieceStore
+	sa         retrievalmarket.SectorAccessor
+	dagst      dagstore.Interface
 	publisher  *storageadapter.DealPublisher
 	spApi      sealingpipeline.API
 	fullNode   v1api.FullNode
 }
 
-func NewResolver(cfg *config.Boost, r lotus_repo.LockedRepo, h host.Host, dealsDB *db.DealsDB, logsDB *db.LogsDB, plDB *db.ProposalLogsDB, fundsDB *db.FundsDB, fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager, spApi sealingpipeline.API, provider *storagemarket.Provider, legacyProv lotus_storagemarket.StorageProvider, legacyDT lotus_dtypes.ProviderDataTransfer, publisher *storageadapter.DealPublisher, fullNode v1api.FullNode) *resolver {
+func NewResolver(cfg *config.Boost, r lotus_repo.LockedRepo, h host.Host, dealsDB *db.DealsDB, logsDB *db.LogsDB, plDB *db.ProposalLogsDB, fundsDB *db.FundsDB, fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager, spApi sealingpipeline.API, provider *storagemarket.Provider, legacyProv lotus_storagemarket.StorageProvider, legacyDT lotus_dtypes.ProviderDataTransfer, ps piecestore.PieceStore, sa retrievalmarket.SectorAccessor, dagst dagstore.Interface, publisher *storageadapter.DealPublisher, fullNode v1api.FullNode) *resolver {
 	return &resolver{
 		cfg:        cfg,
 		repo:       r,
@@ -68,6 +74,9 @@ func NewResolver(cfg *config.Boost, r lotus_repo.LockedRepo, h host.Host, dealsD
 		provider:   provider,
 		legacyProv: legacyProv,
 		legacyDT:   legacyDT,
+		ps:         ps,
+		sa:         sa,
+		dagst:      dagst,
 		publisher:  publisher,
 		spApi:      spApi,
 		fullNode:   fullNode,
@@ -94,7 +103,7 @@ func (r *resolver) Deal(ctx context.Context, args struct{ ID graphql.ID }) (*dea
 		return nil, err
 	}
 
-	return newDealResolver(deal, r.dealsDB, r.logsDB, r.spApi), nil
+	return newDealResolver(deal, r.provider, r.dealsDB, r.logsDB, r.spApi), nil
 }
 
 type dealsArgs struct {
@@ -127,7 +136,7 @@ func (r *resolver) Deals(ctx context.Context, args dealsArgs) (*dealListResolver
 
 	resolvers := make([]*dealResolver, 0, len(deals))
 	for _, deal := range deals {
-		resolvers = append(resolvers, newDealResolver(&deal, r.dealsDB, r.logsDB, r.spApi))
+		resolvers = append(resolvers, newDealResolver(&deal, r.provider, r.dealsDB, r.logsDB, r.spApi))
 	}
 
 	return &dealListResolver{
@@ -160,7 +169,7 @@ func (r *resolver) DealUpdate(ctx context.Context, args struct{ ID graphql.ID })
 	}
 
 	net := make(chan *dealResolver, 1)
-	net <- newDealResolver(deal, r.dealsDB, r.logsDB, r.spApi)
+	net <- newDealResolver(deal, r.provider, r.dealsDB, r.logsDB, r.spApi)
 
 	// Updates to deal state are broadcast on pubsub. Pipe these updates to the
 	// client
@@ -172,7 +181,7 @@ func (r *resolver) DealUpdate(ctx context.Context, args struct{ ID graphql.ID })
 		}
 		return nil, fmt.Errorf("%s: subscribing to deal updates: %w", args.ID, err)
 	}
-	sub := &subLastUpdate{sub: dealUpdatesSub, dealsDB: r.dealsDB, logsDB: r.logsDB, spApi: r.spApi}
+	sub := &subLastUpdate{sub: dealUpdatesSub, provider: r.provider, dealsDB: r.dealsDB, logsDB: r.logsDB, spApi: r.spApi}
 	go func() {
 		sub.Pipe(ctx, net) // blocks until connection is closed
 		close(net)
@@ -211,7 +220,7 @@ func (r *resolver) DealNew(ctx context.Context) (<-chan *dealNewResolver, error)
 			case evti := <-sub.Out():
 				// Pipe the deal to the new deal channel
 				di := evti.(types.ProviderDealState)
-				rsv := newDealResolver(&di, r.dealsDB, r.logsDB, r.spApi)
+				rsv := newDealResolver(&di, r.provider, r.dealsDB, r.logsDB, r.spApi)
 				totalCount, err := r.dealsDB.Count(ctx, "")
 				if err != nil {
 					log.Errorf("getting total deal count: %w", err)
@@ -322,15 +331,17 @@ func (r *resolver) dealList(ctx context.Context, query string, cursor *graphql.I
 
 type dealResolver struct {
 	types.ProviderDealState
+	provider    *storagemarket.Provider
 	transferred uint64
 	dealsDB     *db.DealsDB
 	logsDB      *db.LogsDB
 	spApi       sealingpipeline.API
 }
 
-func newDealResolver(deal *types.ProviderDealState, dealsDB *db.DealsDB, logsDB *db.LogsDB, spApi sealingpipeline.API) *dealResolver {
+func newDealResolver(deal *types.ProviderDealState, provider *storagemarket.Provider, dealsDB *db.DealsDB, logsDB *db.LogsDB, spApi sealingpipeline.API) *dealResolver {
 	return &dealResolver{
 		ProviderDealState: *deal,
+		provider:          provider,
 		transferred:       uint64(deal.NBytesReceived),
 		dealsDB:           dealsDB,
 		logsDB:            logsDB,
@@ -494,13 +505,17 @@ func (dr *dealResolver) message(ctx context.Context, checkpoint dealcheckpoints.
 		if dr.IsOffline {
 			return "Awaiting Offline Data Import"
 		}
-		switch dr.transferred {
-		case 0:
+		switch {
+		case dr.transferred == 0 && !dr.provider.IsTransferStalled(dr.DealUuid):
 			return "Transfer Queued"
-		case 100:
+		case dr.transferred == 100:
 			return "Transfer Complete"
 		default:
 			pct := (100 * dr.transferred) / dr.ProviderDealState.Transfer.Size
+			isStalled := dr.provider.IsTransferStalled(dr.DealUuid)
+			if isStalled {
+				return fmt.Sprintf("Transfer stalled at %d%% ", pct)
+			}
 			return fmt.Sprintf("Transferring %d%%", pct)
 		}
 	case dealcheckpoints.Transferred:
@@ -523,6 +538,22 @@ func (dr *dealResolver) message(ctx context.Context, checkpoint dealcheckpoints.
 		return "Error: " + dr.Err
 	}
 	return checkpoint.String()
+}
+
+func (dr *dealResolver) TransferSamples() []*transferPoint {
+	points := dr.provider.Transfer(dr.DealUuid)
+	pts := make([]*transferPoint, 0, len(points))
+	for _, pt := range points {
+		pts = append(pts, &transferPoint{
+			At:    graphql.Time{Time: pt.At},
+			Bytes: gqltypes.Uint64(pt.Bytes),
+		})
+	}
+	return pts
+}
+
+func (dr *dealResolver) IsTransferStalled() bool {
+	return dr.provider.IsTransferStalled(dr.DealUuid)
 }
 
 func (dr *dealResolver) sealingState(ctx context.Context) string {
@@ -586,10 +617,11 @@ func toUuid(id graphql.ID) (uuid.UUID, error) {
 }
 
 type subLastUpdate struct {
-	sub     event.Subscription
-	dealsDB *db.DealsDB
-	logsDB  *db.LogsDB
-	spApi   sealingpipeline.API
+	sub      event.Subscription
+	provider *storagemarket.Provider
+	dealsDB  *db.DealsDB
+	logsDB   *db.LogsDB
+	spApi    sealingpipeline.API
 }
 
 func (s *subLastUpdate) Pipe(ctx context.Context, net chan *dealResolver) {
@@ -628,7 +660,7 @@ func (s *subLastUpdate) Pipe(ctx context.Context, net chan *dealResolver) {
 	loop:
 		for {
 			di := lastUpdate.(types.ProviderDealState)
-			rsv := newDealResolver(&di, s.dealsDB, s.logsDB, s.spApi)
+			rsv := newDealResolver(&di, s.provider, s.dealsDB, s.logsDB, s.spApi)
 
 			select {
 			case <-ctx.Done():

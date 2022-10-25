@@ -59,6 +59,8 @@ type Deal {
   PublishCid: String!
   IsOffline: Boolean!
   Transfer: TransferParams!
+  TransferSamples: [TransferPoint]!
+  IsTransferStalled: Boolean!
   Checkpoint: String!
   CheckpointAt: Time!
   Err: String!
@@ -138,6 +140,35 @@ type DealLog {
   LogMsg: String!
   LogParams: String!
   Subsystem: String!
+}
+
+type IndexStatus {
+  Status: String!
+  Error: String!
+}
+
+type SealStatus {
+  IsUnsealed: Boolean!
+  Error: String!
+}
+
+type PieceDeal {
+  SealStatus: SealStatus!
+  Deal: DealBasic!
+  Sector: Sector!
+}
+
+type PieceInfoDeal {
+  ChainDealID: Uint64!
+  Sector: Sector!
+  SealStatus: SealStatus!
+}
+
+type PieceStatus {
+  PieceCid: String!
+  IndexStatus: IndexStatus!
+  Deals: [PieceDeal]!
+  PieceInfoDeals: [PieceInfoDeal]!
 }
 
 type ProposalLog {
@@ -258,6 +289,19 @@ type TransferPoint {
   Bytes: Uint64!
 }
 
+type HostStats {
+  Host: String!
+  Total: Int!
+  Started: Int!
+  Stalled: Int!
+  TransferSamples: [TransferPoint]!
+}
+
+type TransferStats {
+  HttpMaxConcurrentDownloads: Int!
+  Stats: [HostStats]!
+}
+
 type MpoolMessage {
   From: String!
   To: String!
@@ -278,8 +322,8 @@ type Libp2pAddrInfo {
 }
 
 type StorageAsk {
-  Price: Uint64!
-  VerifiedPrice: Uint64!
+  Price: BigInt!
+  VerifiedPrice: BigInt!
   MinPieceSize: Uint64!
   MaxPieceSize: Uint64!
   ExpiryEpoch: Uint64!
@@ -287,8 +331,8 @@ type StorageAsk {
 }
 
 input StorageAskUpdate {
-  Price: Uint64
-  VerifiedPrice: Uint64
+  Price: BigInt
+  VerifiedPrice: BigInt
   MinPieceSize: Uint64
   MaxPieceSize: Uint64
 }
@@ -307,7 +351,7 @@ type RootQuery {
   deals(query: String, cursor: ID, offset: Int, limit: Int): DealList!
 
   """Get all Deals made with legacy markets endpoint"""
-  legacyDeals(cursor: ID, offset: Int, limit: Int): LegacyDealList!
+  legacyDeals(query: String, cursor: ID, offset: Int, limit: Int): LegacyDealList!
 
   """Get the total number of deals"""
   dealsCount: Int!
@@ -320,6 +364,12 @@ type RootQuery {
 
   """Get the number of accepted and rejected deal proposal logs"""
   proposalLogsCount: ProposalLogsCount!
+
+  """Get information about a piece from the piece store, DAG store and database"""
+  pieceStatus(pieceCid: String!): PieceStatus!
+
+  """Get the pieces that contain a particular payload CID"""
+  piecesWithPayloadCid(payloadCid: String!): [String!]!
 
   """Get storage space usage"""
   storage: Storage!
@@ -341,6 +391,9 @@ type RootQuery {
 
   """Get ongoing transfers"""
   transfers: [TransferPoint]!
+
+  """Get stats about queued / active transfers"""
+  transferStats: TransferStats!
 
   """Get local messages in the mpool"""
   mpool(local: Boolean!): [MpoolMessage]!

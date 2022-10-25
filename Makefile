@@ -72,8 +72,8 @@ CLEAN+=build/.update-modules
 debug: GOFLAGS+=-tags=debug
 debug: build-go
 
-calibnet: GOFLAGS+=-tags=calibnet
-calibnet: build-go
+calibnet-go: GOFLAGS+=-tags=calibnet
+calibnet-go: build-go
 
 deps: $(BUILD_DEPS)
 .PHONY: deps
@@ -97,6 +97,12 @@ booster-http: $(BUILD_DEPS)
 	$(GOCC) build $(GOFLAGS) -o booster-http ./cmd/booster-http
 .PHONY: booster-http
 BINS+=booster-http
+
+booster-bitswap: $(BUILD_DEPS)
+	rm -f booster-bitswap
+	$(GOCC) build $(GOFLAGS) -o booster-bitswap ./cmd/booster-bitswap
+.PHONY: booster-bitswap
+BINS+=booster-bitswap
 
 devnet: $(BUILD_DEPS)
 	rm -f devnet
@@ -129,6 +135,9 @@ build-go: boost devnet
 
 build: react build-go
 .PHONY: build
+
+calibnet: react calibnet-go
+.PHONY: calibnet
 
 install: install-boost install-devnet
 
@@ -188,3 +197,53 @@ docsgen-openrpc-boost: docsgen-openrpc-bin
 	./docgen-openrpc "api/api.go" "Boost" "api" "./api" -gzip > build/openrpc/boost.json.gz
 
 .PHONY: docsgen docsgen-md-bin docsgen-openrpc-bin
+
+## DOCKER IMAGES
+docker_user?=filecoin
+lotus_version?=1.17.2-rc2
+lotus_src_dir?=
+
+ifeq ($(lotus_src_dir),)
+    lotus_src_dir=/tmp/lotus-$(lotus_version)
+    lotus_checkout_dir=$(lotus_src_dir)
+else
+    lotus_version=dev
+    lotus_checkout_dir=
+endif
+lotus_test_image=$(docker_user)/lotus-test:$(lotus_version)
+docker_build_cmd=docker build --build-arg LOTUS_TEST_IMAGE=$(lotus_test_image) $(docker_args)
+
+### lotus test docker image
+info/lotus-test:
+	@echo Lotus dir = $(lotus_src_dir)
+	@echo Lotus ver = $(lotus_version)
+.PHONY: info/lotus-test
+$(lotus_checkout_dir):
+	git clone --depth 1 --branch v$(lotus_version) https://github.com/filecoin-project/lotus $@
+docker/lotus-test: info/lotus-test | $(lotus_checkout_dir)
+	cd $(lotus_src_dir) && $(docker_build_cmd) -f Dockerfile.lotus --target lotus-test \
+		-t $(lotus_test_image) .
+.PHONY: docker/lotus-test
+
+### devnet images
+docker/%:
+	cd docker/devnet/$* && $(docker_build_cmd) -t $(docker_user)/$*-dev:$(lotus_version) \
+		--build-arg BUILD_VERSION=$(lotus_version) .
+docker/boost: build/.update-modules
+	DOCKER_BUILDKIT=1 $(docker_build_cmd) \
+		-t $(docker_user)/boost-dev:dev --build-arg BUILD_VERSION=dev \
+		-f docker/devnet/Dockerfile.source --target boost-dev .
+.PHONY: docker/boost
+docker/booster-http:
+	DOCKER_BUILDKIT=1 $(docker_build_cmd) \
+		-t $(docker_user)/booster-http-dev:dev --build-arg BUILD_VERSION=dev \
+		-f docker/devnet/Dockerfile.source --target booster-http-dev .
+.PHONY: docker/booster-http
+docker/booster-bitswap:
+	DOCKER_BUILDKIT=1 $(docker_build_cmd) \
+		-t $(docker_user)/booster-bitswap-dev:dev --build-arg BUILD_VERSION=dev \
+		-f docker/devnet/Dockerfile.source --target booster-bitswap-dev .
+.PHONY: docker/booster-bitswap
+docker/all: docker/lotus-test docker/boost docker/booster-http docker/booster-bitswap \
+	docker/lotus docker/lotus-miner
+.PHONY: docker/all

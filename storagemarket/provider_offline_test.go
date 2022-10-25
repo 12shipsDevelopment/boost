@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/filecoin-project/boost/storagemarket/types/dealcheckpoints"
 	"github.com/filecoin-project/go-state-types/abi"
@@ -24,16 +24,18 @@ func TestSimpleOfflineDealHappy(t *testing.T) {
 	// build the deal proposal with the blocking http test server and a completely blocking miner stub
 	td := harness.newDealBuilder(t, 1, withOfflineDeal()).withAllMinerCallsBlocking().build()
 
-	// create a deal proposal for the offline deal
-	pi, err := harness.Provider.ExecuteDeal(td.params, peer.ID(""))
-	require.NoError(t, err)
-	require.True(t, pi.Accepted)
-
 	// execute deal
-	require.NoError(t, td.executeAndSubscribeImportOfflineDeal())
+	require.NoError(t, td.executeAndSubscribe())
 
 	// wait for Accepted checkpoint
 	td.waitForAndAssert(t, ctx, dealcheckpoints.Accepted)
+
+	// import data for offline deal
+	require.NoError(t, td.executeAndSubscribeImportOfflineDeal())
+
+	// unblock commp -> wait for Transferred checkpoint
+	td.unblockCommp()
+	td.waitForAndAssert(t, ctx, dealcheckpoints.Transferred)
 
 	// unblock publish -> wait for published checkpoint and assert
 	td.unblockPublish()
@@ -71,13 +73,13 @@ func TestOfflineDealInsufficientProviderFunds(t *testing.T) {
 	td := harness.newDealBuilder(t, 1, withOfflineDeal()).withNoOpMinerStub().build()
 
 	// create a deal proposal for the offline deal
-	pi, err := harness.Provider.ExecuteDeal(td.params, peer.ID(""))
+	pi, err := harness.Provider.ExecuteDeal(context.Background(), td.params, peer.ID(""))
 	require.NoError(t, err)
 	require.True(t, pi.Accepted)
 
 	// expect that when the deal data is imported, the import will fail because
 	// there are not enough funds for the deal
-	pi, err = td.ph.Provider.ImportOfflineDealData(td.params.DealUUID, td.carv2FilePath)
+	pi, err = td.ph.Provider.ImportOfflineDealData(context.Background(), td.params.DealUUID, td.carv2FilePath)
 	require.NoError(t, err)
 	require.False(t, pi.Accepted)
 	require.Contains(t, pi.Reason, "insufficient funds")
