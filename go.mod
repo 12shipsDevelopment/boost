@@ -39,7 +39,6 @@ require (
 	github.com/filecoin-project/specs-storage v0.4.1
 	github.com/filecoin-project/storetheindex v0.4.17
 	github.com/gbrlsnchs/jwt/v3 v3.0.1
-	github.com/go-redis/redis/v8 v8.10.0
 	github.com/golang/mock v1.6.0
 	github.com/google/uuid v1.3.0
 	github.com/gorilla/mux v1.7.4
@@ -190,6 +189,7 @@ require (
 	github.com/go-openapi/jsonreference v0.19.4 // indirect
 	github.com/go-openapi/spec v0.19.11 // indirect
 	github.com/go-openapi/swag v0.19.11 // indirect
+	github.com/go-redis/redis/v8 v8.11.5 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20210107165309-348f09dbbbc0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
