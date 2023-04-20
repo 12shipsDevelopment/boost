@@ -203,27 +203,33 @@ Note that above you already ran a command to export FULLNODE_API (and point it t
 Note also that the provider address is `t01000` and you will need to supply an appropriate `--storage-price` when using `boost deal` since the devnet has a minimum price. Alternatively, using "Settings" in the Boost web UI to set the deal price to zero.
 
 ## Running Boost devnet in Docker
+### Prerequisites
+* Install Docker - https://docs.docker.com/get-docker/
 
 ### Building Docker images
 
-1. Build images
+1. Build images from the root of the Boost repository
 
 ```
 make docker/all
 ```
 
-If you need to build containers using a specific version of lotus then provide the version as a parameter, e.g. `make docker/all lotus_version=1.17.0`. The version must be a tag name of [Lotus git repo](https://github.com/filecoin-project/lotus/tags) without `v` prefix. Or you can build using a local source of lotus - `make docker/all lotus_src_dir=<path of lotus source>`. Also, before starting devnet, you need to update versions in the [.env](docker/devnet/.env) file.
+On ARM-based systems (*Apple M1/M2*) you need to force building Filecoin's Rust libraries from the source
+```
+make docker/all ffi_from_source=1 build_lotus=1
+```
+
+If you need to build containers using a specific version of lotus then provide the version as a parameter, e.g. `make docker/all lotus_version=v1.20.0-rc2 build_lotus=1`. The version must be a tag or a remote branch name of [Lotus git repo](https://github.com/filecoin-project/lotus).
 
 ### Start devnet docker stack
 
 1. Run
 
 ```
-cd docker/devnet
-docker compose up -d
+make devnet/up
 ```
 
-It will spin up `lotus`, `lotus-miner`, `boost`, `booster-http` and `demo-http-server` containers. All temporary data will be saved in `./data` folder.
+It will spin up `lotus`, `lotus-miner`, `boost`, `booster-http` and `demo-http-server` containers. All temporary data will be saved in `./docker/devnet/data` folder.
 
 The initial setup could take up to 20 min or more as it needs to download Filecoin proof parameters. During the initial setup, it is normal to see error messages in the log. Containers are waiting for the lotus to be ready. It may timeout several times. Restart is expected to be managed by `docker`.
 
@@ -249,7 +255,7 @@ docker network connect devnet prometheus
 
 ### Explore Grafana / Tempo and search for traces
 
-http://localhost:3333
+http://localhost:3333 (username: `admin` ; password: `admin`)
 
 ### Making a deal
 
@@ -257,11 +263,13 @@ The `boost` container is packed with `boost` and `lotus` clients. You can connec
 
 ```
 # Attach to a running boost container
-docker compose exec boost /bin/bash
+make devnet/exec service=boost
 
 # Execute the demo script /app/sample/make-a-deal.sh
 root@83260455bbd2:/app# ./sample/make-a-deal.sh
 ```
+
+You can also generate, dense, random cars and automatically make deals by leveraging the script at `./docker/devnet/boost/sample/random-deal.sh`. See the scripts comments for usage details.
 
 ### Accessing Lotus from localhost
 
@@ -271,6 +279,9 @@ By default the [docker-compose.yaml](./docker-compose.yaml) does not expose any 
 ```
 docker exec -it lotus lotus auth api-info --perm=admin
 FULLNODE_API_INFO=eyJ...ms4:/dns/lotus/tcp/1234/http
+
+docker exec -it lotus-miner lotus-miner auth api-info --perm=admin
+MINER_API_INFO=eyJ...UlI:/dns/lotus-miner/tcp/2345/http
 ```
 3. Change the `dns/lotus/tcp/1234/http` to `ip4/<127.0.0.1 or container's IP>/tcp/1234/http` for the use in `FULLNODE_API_INFO`.
 
@@ -278,9 +289,7 @@ FULLNODE_API_INFO=eyJ...ms4:/dns/lotus/tcp/1234/http
 
 To stop containers and drop everything:
 ```
-docker compose down --rmi local
-
-rm -rf ./data
+make devnet/down
 
 rm -rf ~/.cache/filecoin-proof-parameters
 ```

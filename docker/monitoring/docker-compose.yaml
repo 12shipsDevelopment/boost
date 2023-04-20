@@ -7,8 +7,8 @@ networks:
 services:
   tempo:
     container_name: tempo
-    image: grafana/tempo:latest
-    command: [ "-search.enabled=true", "-config.file=/etc/tempo.yaml" ]
+    image: grafana/tempo:r80-5710d1b
+    command: [ "-config.file=/etc/tempo.yaml" ]
     volumes:
       - ./tempo-local.yaml:/etc/tempo.yaml
       - ./overrides.yaml:/etc/overrides.yaml
@@ -43,7 +43,17 @@ services:
     volumes:
       - ./${PROMETHEUS_CONFIG_FILE:-prometheus.yaml}:/etc/prometheus.yaml
     ports:
-      - "9090:9090"
+      - "9190:9090"
+    ## Uncomment and modify this section depending on your Filecoin deployment.
+    ## Prometheus needs to be able to scrape these targets so that it collects metrics
+    ## and have them visualized in Grafana.
+    ##
+    #extra_hosts:
+      #- "boost:host-gateway"
+      #- "booster-http:host-gateway"
+      #- "booster-bitswap:host-gateway"
+      #- "lotus-miner:host-gateway"
+
     logging:
       driver: loki
       options:

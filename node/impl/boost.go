@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"sort"
 
-	tracing "github.com/filecoin-project/boost/tracing"
+	"github.com/filecoin-project/boost/node/impl/backupmgr"
 	"github.com/multiformats/go-multihash"
 	"go.opentelemetry.io/otel/attribute"
 
@@ -17,18 +17,21 @@ import (
 	"github.com/filecoin-project/boost/api"
 	"github.com/filecoin-project/boost/gql"
 	"github.com/filecoin-project/boost/indexprovider"
+	"github.com/filecoin-project/boost/markets/storageadapter"
 	"github.com/filecoin-project/boost/node/modules/dtypes"
-	"github.com/filecoin-project/boost/sealingpipeline"
+	retmarket "github.com/filecoin-project/boost/retrievalmarket/server"
 	"github.com/filecoin-project/boost/storagemarket"
+	"github.com/filecoin-project/boost/storagemarket/sealingpipeline"
 	"github.com/filecoin-project/boost/storagemarket/types"
+	"github.com/filecoin-project/boostd-data/shared/tracing"
 	"github.com/filecoin-project/dagstore"
 	"github.com/filecoin-project/dagstore/shard"
 	"github.com/filecoin-project/go-fil-markets/retrievalmarket"
 	lotus_storagemarket "github.com/filecoin-project/go-fil-markets/storagemarket"
 	"github.com/filecoin-project/go-jsonrpc/auth"
 	lapi "github.com/filecoin-project/lotus/api"
+	"github.com/filecoin-project/lotus/gateway"
 	mktsdagstore "github.com/filecoin-project/lotus/markets/dagstore"
-	"github.com/filecoin-project/lotus/markets/storageadapter"
 	lotus_dtypes "github.com/filecoin-project/lotus/node/modules/dtypes"
 	"github.com/filecoin-project/lotus/storage/sectorblocks"
 	"github.com/google/uuid"
@@ -46,7 +49,8 @@ type BoostAPI struct {
 	api.Common
 	api.Net
 
-	Full lapi.FullNode
+	Full  lapi.FullNode
+	SubCh *gateway.EthSubHandler
 
 	Host host.Host
 
@@ -69,6 +73,9 @@ type BoostAPI struct {
 	SectorAccessor    retrievalmarket.SectorAccessor
 	DealPublisher     *storageadapter.DealPublisher
 
+	// Graphsync Unpaid Retrieval
+	GraphsyncUnpaidRetrieval *retmarket.GraphsyncUnpaidRetrieval
+
 	// Sealing Pipeline API
 	Sps sealingpipeline.API
 
@@ -79,6 +86,8 @@ type BoostAPI struct {
 	Tracing *tracing.Tracing
 
 	DS lotus_dtypes.MetadataDS
+
+	Bkp *backupmgr.BackupMgr
 
 	ConsiderOnlineStorageDealsConfigFunc        lotus_dtypes.ConsiderOnlineStorageDealsConfigFunc        `optional:"true"`
 	SetConsiderOnlineStorageDealsConfigFunc     lotus_dtypes.SetConsiderOnlineStorageDealsConfigFunc     `optional:"true"`
@@ -484,6 +493,11 @@ func (sm *BoostAPI) BoostDagstoreDestroyShard(ctx context.Context, key string) e
 	return nil
 }
 
+func (sm *BoostAPI) BoostMakeDeal(ctx context.Context, params types.DealParams) (*api.ProviderDealRejectionInfo, error) {
+	log.Infow("received json-rpc deal proposal", "id", params.DealUUID)
+	return sm.StorageProvider.ExecuteDeal(ctx, &params, "json-rpc-deal")
+}
+
 func (sm *BoostAPI) BlockstoreGet(ctx context.Context, c cid.Cid) ([]byte, error) {
 	blk, err := sm.IndexBackedBlockstore.Get(ctx, c)
 	if err != nil {
@@ -498,4 +512,8 @@ func (sm *BoostAPI) BlockstoreHas(ctx context.Context, c cid.Cid) (bool, error) 
 
 func (sm *BoostAPI) BlockstoreGetSize(ctx context.Context, c cid.Cid) (int, error) {
 	return sm.IndexBackedBlockstore.GetSize(ctx, c)
+}
+
+func (sm *BoostAPI) OnlineBackup(ctx context.Context, dstDir string) error {
+	return sm.Bkp.Backup(ctx, dstDir)
 }

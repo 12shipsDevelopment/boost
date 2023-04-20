@@ -21,6 +21,7 @@
   * [BoostDealBySignedProposalCid](#boostdealbysignedproposalcid)
   * [BoostDummyDeal](#boostdummydeal)
   * [BoostIndexerAnnounceAllDeals](#boostindexerannouncealldeals)
+  * [BoostMakeDeal](#boostmakedeal)
   * [BoostOfflineDealWithData](#boostofflinedealwithdata)
 * [Deals](#deals)
   * [DealsConsiderOfflineRetrievalDeals](#dealsconsiderofflineretrievaldeals)
@@ -79,6 +80,8 @@
   * [NetPubsubScores](#netpubsubscores)
   * [NetSetLimit](#netsetlimit)
   * [NetStat](#netstat)
+* [Online](#online)
+  * [OnlineBackup](#onlinebackup)
 * [Pieces](#pieces)
   * [PiecesGetCIDInfo](#piecesgetcidinfo)
   * [PiecesGetMaxOffset](#piecesgetmaxoffset)
@@ -274,7 +277,7 @@ Response: `{}`
 ### BoostDagstoreListShards
 
 
-Perms: read
+Perms: admin
 
 Inputs: `null`
 
@@ -397,7 +400,9 @@ Response:
   "CheckpointAt": "0001-01-01T00:00:00Z",
   "Err": "string value",
   "Retry": "auto",
-  "NBytesReceived": 9
+  "NBytesReceived": 9,
+  "FastRetrieval": true,
+  "AnnounceToIPNI": true
 }
 ```
 
@@ -462,7 +467,9 @@ Response:
   "CheckpointAt": "0001-01-01T00:00:00Z",
   "Err": "string value",
   "Retry": "auto",
-  "NBytesReceived": 9
+  "NBytesReceived": 9,
+  "FastRetrieval": true,
+  "AnnounceToIPNI": true
 }
 ```
 
@@ -506,7 +513,9 @@ Inputs:
       "ClientID": "string value",
       "Params": "Ynl0ZSBhcnJheQ==",
       "Size": 42
-    }
+    },
+    "RemoveUnsealedCopy": true,
+    "SkipIPNIAnnounce": true
   }
 ]
 ```
@@ -527,6 +536,61 @@ Perms: admin
 Inputs: `null`
 
 Response: `{}`
+
+### BoostMakeDeal
+
+
+Perms: write
+
+Inputs:
+```json
+[
+  {
+    "DealUUID": "07070707-0707-0707-0707-070707070707",
+    "IsOffline": true,
+    "ClientDealProposal": {
+      "Proposal": {
+        "PieceCID": {
+          "/": "bafy2bzacea3wsdh6y3a36tb3skempjoxqpuyompjbmfeyf34fi3uy6uue42v4"
+        },
+        "PieceSize": 1032,
+        "VerifiedDeal": true,
+        "Client": "f01234",
+        "Provider": "f01234",
+        "Label": "",
+        "StartEpoch": 10101,
+        "EndEpoch": 10101,
+        "StoragePricePerEpoch": "0",
+        "ProviderCollateral": "0",
+        "ClientCollateral": "0"
+      },
+      "ClientSignature": {
+        "Type": 2,
+        "Data": "Ynl0ZSBhcnJheQ=="
+      }
+    },
+    "DealDataRoot": {
+      "/": "bafy2bzacea3wsdh6y3a36tb3skempjoxqpuyompjbmfeyf34fi3uy6uue42v4"
+    },
+    "Transfer": {
+      "Type": "string value",
+      "ClientID": "string value",
+      "Params": "Ynl0ZSBhcnJheQ==",
+      "Size": 42
+    },
+    "RemoveUnsealedCopy": true,
+    "SkipIPNIAnnounce": true
+  }
+]
+```
+
+Response:
+```json
+{
+  "Accepted": true,
+  "Reason": "string value"
+}
+```
 
 ### BoostOfflineDealWithData
 
@@ -1642,6 +1706,23 @@ Response:
   }
 }
 ```
+
+## Online
+
+
+### OnlineBackup
+There are not yet any comments for this method.
+
+Perms: admin
+
+Inputs:
+```json
+[
+  "string value"
+]
+```
+
+Response: `{}`
 
 ## Pieces
 

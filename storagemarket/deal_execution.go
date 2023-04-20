@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/filecoin-project/boost/storagemarket/types"
@@ -80,7 +81,17 @@ func (p *Provider) runDeal(deal *types.ProviderDealState, dh *dealHandler) {
 	p.saveDealToDB(dh.Publisher, deal)
 }
 
-func (p *Provider) execDeal(deal *smtypes.ProviderDealState, dh *dealHandler) *dealMakingError {
+func (p *Provider) execDeal(deal *smtypes.ProviderDealState, dh *dealHandler) (dmerr *dealMakingError) {
+	// Capture any panic as a manually retryable error
+	defer func() {
+		if err := recover(); err != nil {
+			dmerr = &dealMakingError{
+				error: fmt.Errorf("Caught panic in deal execution: %s\n%s", err, debug.Stack()),
+				retry: smtypes.DealRetryManual,
+			}
+		}
+	}()
+
 	// If the deal has not yet been handed off to the sealer
 	if deal.Checkpoint < dealcheckpoints.AddedPiece {
 		transferType := "downloaded file"
@@ -224,7 +235,11 @@ func (p *Provider) execDealUptoAddPiece(ctx context.Context, deal *types.Provide
 			err.error = fmt.Errorf("failed to add index and announce deal: %w", err.error)
 			return err
 		}
-		p.dealLogger.Infow(deal.DealUuid, "deal successfully indexed and announced")
+		if deal.AnnounceToIPNI {
+			p.dealLogger.Infow(deal.DealUuid, "deal successfully indexed and announced")
+		} else {
+			p.dealLogger.Infow(deal.DealUuid, "deal successfully indexed")
+		}
 	} else {
 		p.dealLogger.Infow(deal.DealUuid, "deal has already been indexed and announced")
 	}
@@ -359,19 +374,29 @@ func (p *Provider) transferAndVerify(dh *dealHandler, pub event.Emitter, deal *s
 	return p.updateCheckpoint(pub, deal, dealcheckpoints.Transferred)
 }
 
+const OneGib = 1024 * 1024 * 1024
+
 func (p *Provider) waitForTransferFinish(ctx context.Context, handler transport.Handler, pub event.Emitter, deal *types.ProviderDealState) error {
 	defer handler.Close()
 	defer p.transfers.complete(deal.DealUuid)
 
-	// log transfer progress to the deal log every 10%
-	var lastOutputPct int64
+	// log transfer progress to the deal log every 10% or every GiB
+	var lastOutput int64
 	logTransferProgress := func(received int64) {
-		pct := (100 * received) / int64(deal.Transfer.Size)
-		outputPct := pct / 10
-		if outputPct != lastOutputPct {
-			lastOutputPct = outputPct
-			p.dealLogger.Infow(deal.DealUuid, "transfer progress", "bytes received", received,
-				"deal size", deal.Transfer.Size, "percent complete", pct)
+		if deal.Transfer.Size > 0 {
+			pct := (100 * received) / int64(deal.Transfer.Size)
+			outputPct := pct / 10
+			if outputPct != lastOutput {
+				lastOutput = outputPct
+				p.dealLogger.Infow(deal.DealUuid, "transfer progress", "bytes received", received,
+					"deal size", deal.Transfer.Size, "percent complete", pct)
+			}
+		} else {
+			gib := received / OneGib
+			if gib != lastOutput {
+				lastOutput = gib
+				p.dealLogger.Infow(deal.DealUuid, "transfer progress", "bytes received", received)
+			}
 		}
 	}
 
@@ -426,11 +451,24 @@ func (p *Provider) publishDeal(ctx context.Context, pub event.Emitter, deal *typ
 				}
 			}
 
+			// Check if the client is an f4 address, ie an FVM contract
+			clientAddr := deal.ClientDealProposal.Proposal.Client.String()
+			isContractClient := len(clientAddr) >= 2 && (clientAddr[:2] == "t4" || clientAddr[:2] == "f4")
+
+			if isContractClient {
+				// For contract deal publish errors the deal fails fatally: we don't
+				// want to retry because the deal is probably taken by another SP
+				return &dealMakingError{
+					retry: types.DealRetryFatal,
+					error: fmt.Errorf("fatal error to publish deal %s: %w", deal.DealUuid, err),
+				}
+			}
+
 			// For any other publish error the user must manually retry: we don't
 			// want to automatically retry because deal publishing costs money
 			return &dealMakingError{
 				retry: types.DealRetryManual,
-				error: fmt.Errorf("failed to publish deal %s: %w", deal.DealUuid, err),
+				error: fmt.Errorf("recoverable error to publish deal %s: %w", deal.DealUuid, err),
 			}
 		}
 
@@ -564,9 +602,16 @@ func (p *Provider) addPiece(ctx context.Context, pub event.Emitter, deal *types.
 
 func (p *Provider) indexAndAnnounce(ctx context.Context, pub event.Emitter, deal *types.ProviderDealState) *dealMakingError {
 	pc := deal.ClientDealProposal.Proposal.PieceCID
+	propCid, err := deal.ClientDealProposal.Proposal.Cid()
+	if err != nil {
+		return &dealMakingError{
+			retry: types.DealRetryFatal,
+			error: fmt.Errorf("index and announce: getting deal proposal cid: %w", err),
+		}
+	}
 
 	// add deal to piecestore
-	if err := p.ps.AddDealForPiece(pc, piecestore.DealInfo{
+	if err := p.ps.AddDealForPiece(pc, propCid, piecestore.DealInfo{
 		DealID:   deal.ChainDealID,
 		SectorID: deal.SectorID,
 		Offset:   deal.Offset,
@@ -580,7 +625,7 @@ func (p *Provider) indexAndAnnounce(ctx context.Context, pub event.Emitter, deal
 	p.dealLogger.Infow(deal.DealUuid, "deal successfully added to piecestore")
 
 	// register with dagstore
-	err := stores.RegisterShardSync(ctx, p.dagst, pc, "", true)
+	err = stores.RegisterShardSync(ctx, p.dagst, pc, "", true)
 
 	if err != nil {
 		if !errors.Is(err, dagstore.ErrShardExists) {
@@ -596,15 +641,20 @@ func (p *Provider) indexAndAnnounce(ctx context.Context, pub event.Emitter, deal
 
 	// if the index provider is enabled
 	if p.ip.Enabled() {
-		// announce to the network indexer but do not fail the deal if the announcement fails
-		annCid, err := p.ip.AnnounceBoostDeal(ctx, deal)
-		if err != nil {
-			return &dealMakingError{
-				retry: types.DealRetryAuto,
-				error: fmt.Errorf("failed to announce deal to network indexer: %w", err),
+		if deal.AnnounceToIPNI {
+			// announce to the network indexer but do not fail the deal if the announcement fails,
+			// just retry the next time boost restarts
+			annCid, err := p.ip.AnnounceBoostDeal(ctx, deal)
+			if err != nil {
+				return &dealMakingError{
+					retry: types.DealRetryAuto,
+					error: fmt.Errorf("failed to announce deal to network indexer: %w", err),
+				}
 			}
+			p.dealLogger.Infow(deal.DealUuid, "announced deal to network indexer", "announcement-cid", annCid)
+		} else {
+			p.dealLogger.Infow(deal.DealUuid, "didn't announce deal as requested in the deal proposal")
 		}
-		p.dealLogger.Infow(deal.DealUuid, "announced deal to network indexer", "announcement-cid", annCid)
 	} else {
 		p.dealLogger.Infow(deal.DealUuid, "didn't announce deal because network indexer is disabled")
 	}

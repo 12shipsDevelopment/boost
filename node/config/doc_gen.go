@@ -68,6 +68,12 @@ your node if metadata log is disabled`,
 			Comment: ``,
 		},
 		{
+			Name: "ContractDeals",
+			Type: "ContractDealsConfig",
+
+			Comment: ``,
+		},
+		{
 			Name: "LotusDealmaking",
 			Type: "lotus_config.DealmakingConfig",
 
@@ -116,6 +122,26 @@ your node if metadata log is disabled`,
 			Type: "lotus_config.Pubsub",
 
 			Comment: ``,
+		},
+	},
+	"ContractDealsConfig": []DocField{
+		{
+			Name: "Enabled",
+			Type: "bool",
+
+			Comment: `Whether to enable chain monitoring in order to accept contract deals`,
+		},
+		{
+			Name: "AllowlistContracts",
+			Type: "[]string",
+
+			Comment: `Allowlist for contracts that this SP should accept deals from`,
+		},
+		{
+			Name: "From",
+			Type: "string",
+
+			Comment: `From address for eth_ state call`,
 		},
 	},
 	"DealmakingConfig": []DocField{
@@ -222,24 +248,57 @@ Set this value to 0 to indicate there is no limit per host.`,
 			Comment: `The amount of time to keep deal proposal logs for before cleaning them up.`,
 		},
 		{
+			Name: "RetrievalLogDuration",
+			Type: "Duration",
+
+			Comment: `The amount of time to keep retrieval deal logs for before cleaning them up.
+Note RetrievalLogDuration should exceed the StalledRetrievalTimeout as the
+logs db is leveraged for pruning stalled retrievals.`,
+		},
+		{
+			Name: "StalledRetrievalTimeout",
+			Type: "Duration",
+
+			Comment: `The amount of time stalled retrieval deals will remain open before being canceled.`,
+		},
+		{
 			Name: "Filter",
 			Type: "string",
 
 			Comment: `A command used for fine-grained evaluation of storage deals
-see https://docs.filecoin.io/mine/lotus/miner-configuration/#using-filters-for-fine-grained-storage-and-retrieval-deal-acceptance for more details`,
+see https://boost.filecoin.io/configuration/deal-filters for more details`,
 		},
 		{
 			Name: "RetrievalFilter",
 			Type: "string",
 
 			Comment: `A command used for fine-grained evaluation of retrieval deals
-see https://docs.filecoin.io/mine/lotus/miner-configuration/#using-filters-for-fine-grained-storage-and-retrieval-deal-acceptance for more details`,
+see https://boost.filecoin.io/configuration/deal-filters for more details`,
 		},
 		{
 			Name: "RetrievalPricing",
 			Type: "*lotus_config.RetrievalPricing",
 
 			Comment: ``,
+		},
+		{
+			Name: "BlockstoreCacheMaxShards",
+			Type: "int",
+
+			Comment: `The maximum number of shards cached by the Dagstore for retrieval
+Lower this limit if boostd memory is too high during retrievals`,
+		},
+		{
+			Name: "BlockstoreCacheExpiry",
+			Type: "Duration",
+
+			Comment: `How long a blockstore shard should be cached before expiring without use`,
+		},
+		{
+			Name: "IsUnsealedCacheExpiry",
+			Type: "Duration",
+
+			Comment: `How long to cache calls to check whether a sector is unsealed`,
 		},
 		{
 			Name: "MaxTransferDuration",
@@ -251,7 +310,8 @@ see https://docs.filecoin.io/mine/lotus/miner-configuration/#using-filters-for-f
 			Name: "RemoteCommp",
 			Type: "bool",
 
-			Comment: `Whether to do commp on the Boost node (local) or on the Sealer (remote)`,
+			Comment: `Whether to do commp on the Boost node (local) or on the Sealer (remote)
+Please note that this only works for v1.2.0 deals and not legacy deals`,
 		},
 		{
 			Name: "MaxConcurrentLocalCommp",
@@ -292,13 +352,52 @@ another concurrent download is allowed to start).`,
 			Name: "BitswapPeerID",
 			Type: "string",
 
-			Comment: `The peed id used by booster-bitswap. To set, copy the value
-printed by running 'booster-bitswap init'. If this value is set,
-Boost will:
-- listen on bitswap protocols on its own peer id and forward them
-to booster bitswap
-- advertise bitswap records to the content indexer
-- list bitswap in available transports on the retrieval transport protocol`,
+			Comment: `The libp2p peer id used by booster-bitswap.
+Run 'booster-bitswap init' to get the peer id.
+When BitswapPeerID is not empty boostd will:
+- listen on bitswap protocols on boostd's own peer id and proxy
+requests to booster-bitswap
+- advertise boostd's peer id in bitswap records to the content indexer
+(bitswap clients connect to boostd, which proxies the requests to
+booster-bitswap)
+- list bitswap as an available transport on the retrieval transport protocol`,
+		},
+		{
+			Name: "BitswapPublicAddresses",
+			Type: "[]string",
+
+			Comment: `Public multiaddresses for booster-bitswap.
+If empty
+- booster-bitswap is assumed to be running privately
+- boostd acts as a proxy: it listens on bitswap protocols on boostd's own
+peer id and forwards them to booster-bitswap
+If public addresses are set
+- boostd announces the booster-bitswap peer id to the indexer as an
+extended provider
+- clients make connections directly to the booster-bitswap process
+(boostd does not act as a proxy)`,
+		},
+		{
+			Name: "BitswapPrivKeyFile",
+			Type: "string",
+
+			Comment: `If operating in public mode, in order to announce booster-bitswap as an extended provider, this value must point to a
+a file containing the booster-bitswap peer id's private key. Can be left blank when operating with protocol proxy.`,
+		},
+		{
+			Name: "DealLogDurationDays",
+			Type: "int",
+
+			Comment: `The deal logs older than DealLogDurationDays are deleted from the logsDB
+to keep the size of logsDB in check. Set the value as "0" to disable log cleanup`,
+		},
+		{
+			Name: "SealingPipelineCacheTimeout",
+			Type: "Duration",
+
+			Comment: `The sealing pipeline status is cached by Boost if deal filters are enabled to avoid constant call to
+lotus-miner API. SealingPipelineCacheTimeout defines cache timeout value in seconds. Default is 30 seconds.
+Any value less than 0 will result in use of default`,
 		},
 	},
 	"FeeConfig": []DocField{
@@ -406,14 +505,14 @@ regardless of this number.`,
 			Type: "string",
 
 			Comment: `A command used for fine-grained evaluation of storage deals
-see https://docs.filecoin.io/mine/lotus/miner-configuration/#using-filters-for-fine-grained-storage-and-retrieval-deal-acceptance for more details`,
+see https://boost.filecoin.io/configuration/deal-filters for more details`,
 		},
 		{
 			Name: "RetrievalFilter",
 			Type: "string",
 
 			Comment: `A command used for fine-grained evaluation of retrieval deals
-see https://docs.filecoin.io/mine/lotus/miner-configuration/#using-filters-for-fine-grained-storage-and-retrieval-deal-acceptance for more details`,
+see https://boost.filecoin.io/configuration/deal-filters for more details`,
 		},
 		{
 			Name: "RetrievalPricing",
@@ -806,10 +905,85 @@ see https://lotus.filecoin.io/storage-providers/advanced-configurations/market/#
 			Comment: ``,
 		},
 	},
+	"lotus_config.Events": []DocField{
+		{
+			Name: "DisableRealTimeFilterAPI",
+			Type: "bool",
+
+			Comment: `EnableEthRPC enables APIs that
+DisableRealTimeFilterAPI will disable the RealTimeFilterAPI that can create and query filters for actor events as they are emitted.
+The API is enabled when EnableEthRPC is true, but can be disabled selectively with this flag.`,
+		},
+		{
+			Name: "DisableHistoricFilterAPI",
+			Type: "bool",
+
+			Comment: `DisableHistoricFilterAPI will disable the HistoricFilterAPI that can create and query filters for actor events
+that occurred in the past. HistoricFilterAPI maintains a queryable index of events.
+The API is enabled when EnableEthRPC is true, but can be disabled selectively with this flag.`,
+		},
+		{
+			Name: "FilterTTL",
+			Type: "Duration",
+
+			Comment: `FilterTTL specifies the time to live for actor event filters. Filters that haven't been accessed longer than
+this time become eligible for automatic deletion.`,
+		},
+		{
+			Name: "MaxFilters",
+			Type: "int",
+
+			Comment: `MaxFilters specifies the maximum number of filters that may exist at any one time.`,
+		},
+		{
+			Name: "MaxFilterResults",
+			Type: "int",
+
+			Comment: `MaxFilterResults specifies the maximum number of results that can be accumulated by an actor event filter.`,
+		},
+		{
+			Name: "MaxFilterHeightRange",
+			Type: "uint64",
+
+			Comment: `MaxFilterHeightRange specifies the maximum range of heights that can be used in a filter (to avoid querying
+the entire chain)`,
+		},
+		{
+			Name: "DatabasePath",
+			Type: "string",
+
+			Comment: `DatabasePath is the full path to a sqlite database that will be used to index actor events to
+support the historic filter APIs. If the database does not exist it will be created. The directory containing
+the database must already exist and be writeable. If a relative path is provided here, sqlite treats it as
+relative to the CWD (current working directory).`,
+		},
+	},
 	"lotus_config.FeeConfig": []DocField{
 		{
 			Name: "DefaultMaxFee",
 			Type: "types.FIL",
+
+			Comment: ``,
+		},
+	},
+	"lotus_config.FevmConfig": []DocField{
+		{
+			Name: "EnableEthRPC",
+			Type: "bool",
+
+			Comment: `EnableEthRPC enables eth_ rpc, and enables storing a mapping of eth transaction hashes to filecoin message Cids.
+This will also enable the RealTimeFilterAPI and HistoricFilterAPI by default, but they can be disabled by config options above.`,
+		},
+		{
+			Name: "EthTxHashMappingLifetimeDays",
+			Type: "int",
+
+			Comment: `EthTxHashMappingLifetimeDays the transaction hash lookup database will delete mappings that have been stored for more than x days
+Set to 0 to keep all mappings`,
+		},
+		{
+			Name: "Events",
+			Type: "Events",
 
 			Comment: ``,
 		},
@@ -836,6 +1010,18 @@ see https://lotus.filecoin.io/storage-providers/advanced-configurations/market/#
 		{
 			Name: "Chainstore",
 			Type: "Chainstore",
+
+			Comment: ``,
+		},
+		{
+			Name: "Cluster",
+			Type: "UserRaftConfig",
+
+			Comment: ``,
+		},
+		{
+			Name: "Fevm",
+			Type: "FevmConfig",
 
 			Comment: ``,
 		},
@@ -1099,6 +1285,24 @@ over the worker address if this flag is set.`,
 'lotus-miner proving compute window-post 0'`,
 		},
 		{
+			Name: "SingleCheckTimeout",
+			Type: "Duration",
+
+			Comment: `WARNING: Setting this value too low risks in sectors being skipped even though they are accessible, just reading the
+test challenge took longer than this timeout
+WARNING: Setting this value too high risks missing PoSt deadline in case IO operations related to this sector are
+blocked (e.g. in case of disconnected NFS mount)`,
+		},
+		{
+			Name: "PartitionCheckTimeout",
+			Type: "Duration",
+
+			Comment: `WARNING: Setting this value too low risks in sectors being skipped even though they are accessible, just reading the
+test challenge took longer than this timeout
+WARNING: Setting this value too high risks missing PoSt deadline in case IO operations related to this partition are
+blocked or slow`,
+		},
+		{
 			Name: "DisableBuiltinWindowPoSt",
 			Type: "bool",
 
@@ -1172,6 +1376,35 @@ Type: Array of multiaddress peerinfo strings, must include peerid (/p2p/12D3K...
 			Type: "string",
 
 			Comment: ``,
+		},
+		{
+			Name: "JsonTracer",
+			Type: "string",
+
+			Comment: `Path to file that will be used to output tracer content in JSON format.
+If present tracer will save data to defined file.
+Format: file path`,
+		},
+		{
+			Name: "ElasticSearchTracer",
+			Type: "string",
+
+			Comment: `Connection string for elasticsearch instance.
+If present tracer will save data to elasticsearch.
+Format: https://<username>:<password>@<elasticsearch_url>:<port>/`,
+		},
+		{
+			Name: "ElasticSearchIndex",
+			Type: "string",
+
+			Comment: `Name of elasticsearch index that will be used to save tracer data.
+This property is used only if ElasticSearchTracer propery is set.`,
+		},
+		{
+			Name: "TracerSourceAuth",
+			Type: "string",
+
+			Comment: `Auth token that will be passed with logs to elasticsearch - used for weighted peers score.`,
 		},
 	},
 	"lotus_config.RetrievalPricing": []DocField{
@@ -1308,7 +1541,7 @@ If you see stuck Finalize tasks after enabling this setting, check
 		},
 		{
 			Name: "ResourceFiltering",
-			Type: "sealer.ResourceFilteringStrategy",
+			Type: "ResourceFilteringStrategy",
 
 			Comment: `ResourceFiltering instructs the system which resource filtering strategy
 to use when evaluating tasks against this worker. An empty value defaults
@@ -1520,7 +1753,7 @@ submitting proofs to the chain individually`,
 			Type: "string",
 
 			Comment: `ColdStoreType specifies the type of the coldstore.
-It can be "universal" (default) or "discard" for discarding cold blocks.`,
+It can be "messages" (default) to store only messages, "universal" to store all chain state or "discard" for discarding cold blocks.`,
 		},
 		{
 			Name: "HotStoreType",
@@ -1550,30 +1783,6 @@ the compaction boundary; default is 0.`,
 			Comment: `HotStoreFullGCFrequency specifies how often to perform a full (moving) GC on the hotstore.
 A value of 0 disables, while a value 1 will do full GC in every compaction.
 Default is 20 (about once a week).`,
-		},
-		{
-			Name: "EnableColdStoreAutoPrune",
-			Type: "bool",
-
-			Comment: `EnableColdStoreAutoPrune turns on compaction of the cold store i.e. pruning
-where hotstore compaction occurs every finality epochs pruning happens every 3 finalities
-Default is false`,
-		},
-		{
-			Name: "ColdStoreFullGCFrequency",
-			Type: "uint64",
-
-			Comment: `ColdStoreFullGCFrequency specifies how often to performa a full (moving) GC on the coldstore.
-Only applies if auto prune is enabled.  A value of 0 disables while a value of 1 will do
-full GC in every prune.
-Default is 7 (about once every a week)`,
-		},
-		{
-			Name: "ColdStoreRetention",
-			Type: "int64",
-
-			Comment: `ColdStoreRetention specifies the retention policy for data reachable from the chain, in
-finalities beyond the compaction boundary, default is 0, -1 retains everything`,
 		},
 	},
 	"lotus_config.StorageMiner": []DocField{
@@ -1630,6 +1839,68 @@ finalities beyond the compaction boundary, default is 0, -1 retains everything`,
 			Type: "DAGStoreConfig",
 
 			Comment: ``,
+		},
+	},
+	"lotus_config.UserRaftConfig": []DocField{
+		{
+			Name: "ClusterModeEnabled",
+			Type: "bool",
+
+			Comment: `EXPERIMENTAL. config to enabled node cluster with raft consensus`,
+		},
+		{
+			Name: "DataFolder",
+			Type: "string",
+
+			Comment: `A folder to store Raft's data.`,
+		},
+		{
+			Name: "InitPeersetMultiAddr",
+			Type: "[]string",
+
+			Comment: `InitPeersetMultiAddr provides the list of initial cluster peers for new Raft
+peers (with no prior state). It is ignored when Raft was already
+initialized or when starting in staging mode.`,
+		},
+		{
+			Name: "WaitForLeaderTimeout",
+			Type: "Duration",
+
+			Comment: `LeaderTimeout specifies how long to wait for a leader before
+failing an operation.`,
+		},
+		{
+			Name: "NetworkTimeout",
+			Type: "Duration",
+
+			Comment: `NetworkTimeout specifies how long before a Raft network
+operation is timed out`,
+		},
+		{
+			Name: "CommitRetries",
+			Type: "int",
+
+			Comment: `CommitRetries specifies how many times we retry a failed commit until
+we give up.`,
+		},
+		{
+			Name: "CommitRetryDelay",
+			Type: "Duration",
+
+			Comment: `How long to wait between retries`,
+		},
+		{
+			Name: "BackupsRotate",
+			Type: "int",
+
+			Comment: `BackupsRotate specifies the maximum number of Raft's DataFolder
+copies that we keep as backups (renaming) after cleanup.`,
+		},
+		{
+			Name: "Tracing",
+			Type: "bool",
+
+			Comment: `Tracing enables propagation of contexts across binary boundaries.`,
 		},
 	},
 	"lotus_config.Wallet": []DocField{

@@ -8,7 +8,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/filecoin-project/boost/build"
-	cliutil "github.com/filecoin-project/boost/cli/util"
+	"github.com/filecoin-project/boostd-data/shared/cliutil"
 )
 
 var log = logging.Logger("boostd")
@@ -66,12 +66,12 @@ func before(cctx *cli.Context) error {
 	_ = logging.SetLogLevel("modules", "INFO")
 	_ = logging.SetLogLevel("cfg", "INFO")
 	_ = logging.SetLogLevel("boost-storage-deal", "INFO")
+	_ = logging.SetLogLevel("index-provider-wrapper", "INFO")
 
 	if cliutil.IsVeryVerbose {
 		_ = logging.SetLogLevel("boostd", "DEBUG")
 		_ = logging.SetLogLevel("provider", "DEBUG")
 		_ = logging.SetLogLevel("boost-net", "DEBUG")
-		_ = logging.SetLogLevel("gql", "DEBUG")
 		_ = logging.SetLogLevel("boost-provider", "DEBUG")
 		_ = logging.SetLogLevel("storagemanager", "DEBUG")
 		_ = logging.SetLogLevel("index-provider-wrapper", "DEBUG")

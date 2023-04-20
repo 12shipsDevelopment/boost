@@ -72,6 +72,12 @@ func DefaultBoost() *Boost {
 			ServiceName: "boostd",
 		},
 
+		ContractDeals: ContractDealsConfig{
+			Enabled:            false,
+			AllowlistContracts: []string{},
+			From:               "0x0000000000000000000000000000000000000000",
+		},
+
 		Dealmaking: DealmakingConfig{
 			ConsiderOnlineStorageDeals:     true,
 			ConsiderOfflineStorageDeals:    true,
@@ -88,6 +94,8 @@ func DefaultBoost() *Boost {
 			StartEpochSealingBuffer: 480, // 480 epochs buffer == 4 hours from adding deal to sector to sector being sealed
 
 			DealProposalLogDuration: Duration(time.Hour * 24),
+			RetrievalLogDuration:    Duration(time.Hour * 24),
+			StalledRetrievalTimeout: Duration(time.Minute * 30),
 
 			RetrievalPricing: &lotus_config.RetrievalPricing{
 				Strategy: RetrievalPricingDefaultMode,
@@ -99,6 +107,12 @@ func DefaultBoost() *Boost {
 				},
 			},
 
+			// This should no longer be needed once LID is live
+			BlockstoreCacheMaxShards: 20, // Match default simultaneous retrievals
+			BlockstoreCacheExpiry:    Duration(30 * time.Second),
+
+			IsUnsealedCacheExpiry: Duration(5 * time.Minute),
+
 			MaxTransferDuration: Duration(24 * 3600 * time.Second),
 
 			RemoteCommp:             false,
@@ -107,6 +121,8 @@ func DefaultBoost() *Boost {
 			HttpTransferMaxConcurrentDownloads: 20,
 			HttpTransferStallTimeout:           Duration(5 * time.Minute),
 			HttpTransferStallCheckPeriod:       Duration(30 * time.Second),
+			DealLogDurationDays:                30,
+			SealingPipelineCacheTimeout:        Duration(30 * time.Second),
 		},
 
 		LotusDealmaking: lotus_config.DealmakingConfig{

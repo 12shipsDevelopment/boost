@@ -70,14 +70,16 @@ const EpochQuery = gql`
 `;
 
 const DealsListQuery = gql`
-    query AppDealsListQuery($query: String, $cursor: ID, $offset: Int, $limit: Int) {
-        deals(query: $query, cursor: $cursor, offset: $offset, limit: $limit) {
+    query AppDealsListQuery($query: String, $filter: DealFilter, $cursor: ID, $offset: Int, $limit: Int) {
+        deals(query: $query, filter: $filter, cursor: $cursor, offset: $offset, limit: $limit) {
             deals {
                 ID
                 CreatedAt
                 ClientAddress
                 Checkpoint
                 CheckpointAt
+                AnnounceToIPNI
+                KeepUnsealedCopy
                 IsOffline
                 Err
                 Retry
@@ -166,6 +168,8 @@ const DealSubscription = gql`
             IsOffline
             Checkpoint
             CheckpointAt
+            AnnounceToIPNI
+            KeepUnsealedCopy
             Retry
             Err
             Message
@@ -217,6 +221,78 @@ const ProposalLogsCountQuery = gql`
     }
 `;
 
+const RetrievalLogQuery = gql`
+    query AppRetrievalLogQuery($peerID: String!, $transferID: Uint64!) {
+        retrievalLog(peerID: $peerID, transferID: $transferID) {
+            CreatedAt
+            UpdatedAt
+            PeerID
+            TransferID
+            DealID
+            PayloadCID
+            PieceCID
+            PaymentInterval
+            PaymentIntervalIncrease
+            PricePerByte
+            UnsealPrice
+            Status
+            Message
+            TotalSent
+            DTStatus
+            DTMessage
+            DTEvents {
+                CreatedAt
+                Name
+                Message
+            }
+            MarketEvents {
+                CreatedAt
+                Name
+                Status
+                Message
+            }
+        }
+    }
+`;
+
+const RetrievalLogsListQuery = gql`
+    query AppRetrievalLogsListQuery($cursor: Uint64, $offset: Int, $limit: Int) {
+        retrievalLogs(cursor: $cursor, offset: $offset, limit: $limit) {
+            logs {
+                RowID
+                CreatedAt
+                UpdatedAt
+                PeerID
+                TransferID
+                DealID
+                PayloadCID
+                PieceCID
+                PaymentInterval
+                PaymentIntervalIncrease
+                PricePerByte
+                UnsealPrice
+                Status
+                Message
+                TotalSent
+                DTStatus
+                DTMessage
+            }
+            totalCount
+            more
+        }
+    }
+`;
+
+const RetrievalLogsCountQuery = gql`
+    query AppRetrievalLogsCountQuery {
+        retrievalLogsCount {
+            Count
+            Period
+        }
+    }
+`;
+
+
 const DealCancelMutation = gql`
     mutation AppDealCancelMutation($id: ID!) {
         dealCancel(id: $id)
@@ -243,6 +319,8 @@ const NewDealsSubscription = gql`
                 CreatedAt
                 PieceCid
                 PieceSize
+                AnnounceToIPNI
+                KeepUnsealedCopy
                 ClientAddress
                 StartEpoch
                 EndEpoch
@@ -303,6 +381,12 @@ const LegacyDealQuery = gql`
             InboundCARPath
             AvailableForRetrieval
         }
+    }
+`;
+
+const PiecesWithRootPayloadCidQuery = gql`
+    query AppPiecesWithRootPayloadCidQuery($payloadCid: String!) {
+        piecesWithRootPayloadCid(payloadCid: $payloadCid)
     }
 `;
 
@@ -586,6 +670,10 @@ export {
     NewDealsSubscription,
     ProposalLogsListQuery,
     ProposalLogsCountQuery,
+    RetrievalLogQuery,
+    RetrievalLogsListQuery,
+    RetrievalLogsCountQuery,
+    PiecesWithRootPayloadCidQuery,
     PiecesWithPayloadCidQuery,
     PieceStatusQuery,
     StorageQuery,

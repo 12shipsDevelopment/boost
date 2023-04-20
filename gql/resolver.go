@@ -5,14 +5,18 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 
+	"github.com/dustin/go-humanize"
 	"github.com/filecoin-project/boost/db"
 	"github.com/filecoin-project/boost/fundmanager"
 	gqltypes "github.com/filecoin-project/boost/gql/types"
+	"github.com/filecoin-project/boost/markets/storageadapter"
 	"github.com/filecoin-project/boost/node/config"
-	"github.com/filecoin-project/boost/sealingpipeline"
+	"github.com/filecoin-project/boost/retrievalmarket/rtvllog"
 	"github.com/filecoin-project/boost/storagemanager"
 	"github.com/filecoin-project/boost/storagemarket"
+	"github.com/filecoin-project/boost/storagemarket/sealingpipeline"
 	"github.com/filecoin-project/boost/storagemarket/types"
 	"github.com/filecoin-project/boost/storagemarket/types/dealcheckpoints"
 	"github.com/filecoin-project/boost/transport"
@@ -21,7 +25,6 @@ import (
 	"github.com/filecoin-project/go-fil-markets/retrievalmarket"
 	lotus_storagemarket "github.com/filecoin-project/go-fil-markets/storagemarket"
 	"github.com/filecoin-project/lotus/api/v1api"
-	"github.com/filecoin-project/lotus/markets/storageadapter"
 	lotus_dtypes "github.com/filecoin-project/lotus/node/modules/dtypes"
 	lotus_repo "github.com/filecoin-project/lotus/node/repo"
 	"github.com/google/uuid"
@@ -45,6 +48,7 @@ type resolver struct {
 	h          host.Host
 	dealsDB    *db.DealsDB
 	logsDB     *db.LogsDB
+	retDB      *rtvllog.RetrievalLogDB
 	plDB       *db.ProposalLogsDB
 	fundsDB    *db.FundsDB
 	fundMgr    *fundmanager.FundManager
@@ -60,13 +64,14 @@ type resolver struct {
 	fullNode   v1api.FullNode
 }
 
-func NewResolver(cfg *config.Boost, r lotus_repo.LockedRepo, h host.Host, dealsDB *db.DealsDB, logsDB *db.LogsDB, plDB *db.ProposalLogsDB, fundsDB *db.FundsDB, fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager, spApi sealingpipeline.API, provider *storagemarket.Provider, legacyProv lotus_storagemarket.StorageProvider, legacyDT lotus_dtypes.ProviderDataTransfer, ps piecestore.PieceStore, sa retrievalmarket.SectorAccessor, dagst dagstore.Interface, publisher *storageadapter.DealPublisher, fullNode v1api.FullNode) *resolver {
+func NewResolver(cfg *config.Boost, r lotus_repo.LockedRepo, h host.Host, dealsDB *db.DealsDB, logsDB *db.LogsDB, retDB *rtvllog.RetrievalLogDB, plDB *db.ProposalLogsDB, fundsDB *db.FundsDB, fundMgr *fundmanager.FundManager, storageMgr *storagemanager.StorageManager, spApi sealingpipeline.API, provider *storagemarket.Provider, legacyProv lotus_storagemarket.StorageProvider, legacyDT lotus_dtypes.ProviderDataTransfer, ps piecestore.PieceStore, sa retrievalmarket.SectorAccessor, dagst dagstore.Interface, publisher *storageadapter.DealPublisher, fullNode v1api.FullNode) *resolver {
 	return &resolver{
 		cfg:        cfg,
 		repo:       r,
 		h:          h,
 		dealsDB:    dealsDB,
 		logsDB:     logsDB,
+		retDB:      retDB,
 		plDB:       plDB,
 		fundsDB:    fundsDB,
 		fundMgr:    fundMgr,
@@ -81,14 +86,6 @@ func NewResolver(cfg *config.Boost, r lotus_repo.LockedRepo, h host.Host, dealsD
 		spApi:      spApi,
 		fullNode:   fullNode,
 	}
-}
-
-type storageResolver struct {
-	Staged      gqltypes.Uint64
-	Transferred gqltypes.Uint64
-	Pending     gqltypes.Uint64
-	Free        gqltypes.Uint64
-	MountPoint  string
 }
 
 // query: deal(id) Deal
@@ -106,14 +103,22 @@ func (r *resolver) Deal(ctx context.Context, args struct{ ID graphql.ID }) (*dea
 	return newDealResolver(deal, r.provider, r.dealsDB, r.logsDB, r.spApi), nil
 }
 
+type filterArgs struct {
+	Checkpoint   gqltypes.Checkpoint
+	IsOffline    graphql.NullBool
+	TransferType graphql.NullString
+	IsVerified   graphql.NullBool
+}
+
 type dealsArgs struct {
 	Query  graphql.NullString
+	Filter *filterArgs
 	Cursor *graphql.ID
 	Offset graphql.NullInt
 	Limit  graphql.NullInt
 }
 
-// query: deals(cursor, offset, limit) DealList
+// query: deals(query, filter, cursor, offset, limit) DealList
 func (r *resolver) Deals(ctx context.Context, args dealsArgs) (*dealListResolver, error) {
 	offset := 0
 	if args.Offset.Set && args.Offset.Value != nil && *args.Offset.Value > 0 {
@@ -129,13 +134,25 @@ func (r *resolver) Deals(ctx context.Context, args dealsArgs) (*dealListResolver
 	if args.Query.Set && args.Query.Value != nil {
 		query = *args.Query.Value
 	}
-	deals, count, more, err := r.dealList(ctx, query, args.Cursor, offset, limit)
+
+	var filter *db.FilterOptions
+	if args.Filter != nil {
+		filter = &db.FilterOptions{
+			Checkpoint:   args.Filter.Checkpoint.Value,
+			IsOffline:    args.Filter.IsOffline.Value,
+			TransferType: args.Filter.TransferType.Value,
+			IsVerified:   args.Filter.IsVerified.Value,
+		}
+	}
+
+	deals, count, more, err := r.dealList(ctx, query, filter, args.Cursor, offset, limit)
 	if err != nil {
 		return nil, err
 	}
 
 	resolvers := make([]*dealResolver, 0, len(deals))
 	for _, deal := range deals {
+		deal.NBytesReceived = int64(r.provider.NBytesReceived(deal.DealUuid))
 		resolvers = append(resolvers, newDealResolver(&deal, r.provider, r.dealsDB, r.logsDB, r.spApi))
 	}
 
@@ -147,7 +164,7 @@ func (r *resolver) Deals(ctx context.Context, args dealsArgs) (*dealListResolver
 }
 
 func (r *resolver) DealsCount(ctx context.Context) (int32, error) {
-	count, err := r.dealsDB.Count(ctx, "")
+	count, err := r.dealsDB.Count(ctx, "", nil)
 	if err != nil {
 		return 0, err
 	}
@@ -221,7 +238,7 @@ func (r *resolver) DealNew(ctx context.Context) (<-chan *dealNewResolver, error)
 				// Pipe the deal to the new deal channel
 				di := evti.(types.ProviderDealState)
 				rsv := newDealResolver(&di, r.provider, r.dealsDB, r.logsDB, r.spApi)
-				totalCount, err := r.dealsDB.Count(ctx, "")
+				totalCount, err := r.dealsDB.Count(ctx, "", nil)
 				if err != nil {
 					log.Errorf("getting total deal count: %w", err)
 				}
@@ -300,10 +317,10 @@ func (r *resolver) dealsByPublishCID(ctx context.Context, publishCid cid.Cid) ([
 	return deals, nil
 }
 
-func (r *resolver) dealList(ctx context.Context, query string, cursor *graphql.ID, offset int, limit int) ([]types.ProviderDealState, int, bool, error) {
+func (r *resolver) dealList(ctx context.Context, query string, filter *db.FilterOptions, cursor *graphql.ID, offset int, limit int) ([]types.ProviderDealState, int, bool, error) {
 	// Fetch one extra deal so that we can check if there are more deals
 	// beyond the limit
-	deals, err := r.dealsDB.List(ctx, query, cursor, offset, limit+1)
+	deals, err := r.dealsDB.List(ctx, query, filter, cursor, offset, limit+1)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -314,7 +331,7 @@ func (r *resolver) dealList(ctx context.Context, query string, cursor *graphql.I
 	}
 
 	// Get the total deal count
-	count, err := r.dealsDB.Count(ctx, query)
+	count, err := r.dealsDB.Count(ctx, query, filter)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -367,6 +384,14 @@ func (dr *dealResolver) ProviderAddress() string {
 
 func (dr *dealResolver) IsVerified() bool {
 	return dr.ProviderDealState.ClientDealProposal.Proposal.VerifiedDeal
+}
+
+func (dr *dealResolver) KeepUnsealedCopy() bool {
+	return dr.ProviderDealState.FastRetrieval
+}
+
+func (dr *dealResolver) AnnounceToIPNI() bool {
+	return dr.ProviderDealState.AnnounceToIPNI
 }
 
 func (dr *dealResolver) ProposalLabel() (string, error) {
@@ -505,16 +530,25 @@ func (dr *dealResolver) message(ctx context.Context, checkpoint dealcheckpoints.
 		if dr.IsOffline {
 			return "Awaiting Offline Data Import"
 		}
+		var pct uint64 = math.MaxUint64
+		if dr.ProviderDealState.Transfer.Size > 0 {
+			pct = (100 * dr.transferred) / dr.ProviderDealState.Transfer.Size
+		}
 		switch {
 		case dr.transferred == 0 && !dr.provider.IsTransferStalled(dr.DealUuid):
 			return "Transfer Queued"
-		case dr.transferred == 100:
-			return "Transfer Complete"
+		case pct == 100:
+			return "Verifying Commp"
 		default:
-			pct := (100 * dr.transferred) / dr.ProviderDealState.Transfer.Size
 			isStalled := dr.provider.IsTransferStalled(dr.DealUuid)
 			if isStalled {
-				return fmt.Sprintf("Transfer stalled at %d%% ", pct)
+				if pct == math.MaxUint64 {
+					return fmt.Sprintf("Transfer stalled at %s", humanize.Bytes(dr.transferred))
+				}
+				return fmt.Sprintf("Transfer stalled at %d%%", pct)
+			}
+			if pct == math.MaxUint64 {
+				return fmt.Sprintf("Transferring %s", humanize.Bytes(dr.transferred))
 			}
 			return fmt.Sprintf("Transferring %d%%", pct)
 		}

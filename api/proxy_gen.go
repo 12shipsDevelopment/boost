@@ -52,7 +52,7 @@ type BoostStruct struct {
 
 		BoostDagstoreInitializeShard func(p0 context.Context, p1 string) error `perm:"admin"`
 
-		BoostDagstoreListShards func(p0 context.Context) ([]DagstoreShardInfo, error) `perm:"read"`
+		BoostDagstoreListShards func(p0 context.Context) ([]DagstoreShardInfo, error) `perm:"admin"`
 
 		BoostDagstorePiecesContainingMultihash func(p0 context.Context, p1 multihash.Multihash) ([]cid.Cid, error) `perm:"read"`
 
@@ -67,6 +67,8 @@ type BoostStruct struct {
 		BoostDummyDeal func(p0 context.Context, p1 smtypes.DealParams) (*ProviderDealRejectionInfo, error) `perm:"admin"`
 
 		BoostIndexerAnnounceAllDeals func(p0 context.Context) error `perm:"admin"`
+
+		BoostMakeDeal func(p0 context.Context, p1 smtypes.DealParams) (*ProviderDealRejectionInfo, error) `perm:"write"`
 
 		BoostOfflineDealWithData func(p0 context.Context, p1 uuid.UUID, p2 string) (*ProviderDealRejectionInfo, error) `perm:"admin"`
 
@@ -121,6 +123,8 @@ type BoostStruct struct {
 		MarketSetAsk func(p0 context.Context, p1 types.BigInt, p2 types.BigInt, p3 abi.ChainEpoch, p4 abi.PaddedPieceSize, p5 abi.PaddedPieceSize) error `perm:"admin"`
 
 		MarketSetRetrievalAsk func(p0 context.Context, p1 *retrievalmarket.Ask) error `perm:"admin"`
+
+		OnlineBackup func(p0 context.Context, p1 string) error `perm:"admin"`
 
 		PiecesGetCIDInfo func(p0 context.Context, p1 cid.Cid) (*piecestore.CIDInfo, error) `perm:"read"`
 
@@ -437,6 +441,17 @@ func (s *BoostStub) BoostIndexerAnnounceAllDeals(p0 context.Context) error {
 	return ErrNotSupported
 }
 
+func (s *BoostStruct) BoostMakeDeal(p0 context.Context, p1 smtypes.DealParams) (*ProviderDealRejectionInfo, error) {
+	if s.Internal.BoostMakeDeal == nil {
+		return nil, ErrNotSupported
+	}
+	return s.Internal.BoostMakeDeal(p0, p1)
+}
+
+func (s *BoostStub) BoostMakeDeal(p0 context.Context, p1 smtypes.DealParams) (*ProviderDealRejectionInfo, error) {
+	return nil, ErrNotSupported
+}
+
 func (s *BoostStruct) BoostOfflineDealWithData(p0 context.Context, p1 uuid.UUID, p2 string) (*ProviderDealRejectionInfo, error) {
 	if s.Internal.BoostOfflineDealWithData == nil {
 		return nil, ErrNotSupported
@@ -731,6 +746,17 @@ func (s *BoostStruct) MarketSetRetrievalAsk(p0 context.Context, p1 *retrievalmar
 }
 
 func (s *BoostStub) MarketSetRetrievalAsk(p0 context.Context, p1 *retrievalmarket.Ask) error {
+	return ErrNotSupported
+}
+
+func (s *BoostStruct) OnlineBackup(p0 context.Context, p1 string) error {
+	if s.Internal.OnlineBackup == nil {
+		return ErrNotSupported
+	}
+	return s.Internal.OnlineBackup(p0, p1)
+}
+
+func (s *BoostStub) OnlineBackup(p0 context.Context, p1 string) error {
 	return ErrNotSupported
 }
 

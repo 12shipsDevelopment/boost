@@ -14,10 +14,12 @@ LABEL org.opencontainers.image.version=$BUILD_VERSION \
       summary="This image is used to host the lotus dev service" \
       description="This image is used to host the lotus dev service"
 
-EXPOSE 1234 
+EXPOSE 1234
+EXPOSE 9090
 ENV LOTUS_SKIP_GENESIS_CHECK=_yes_
 ENV GENESIS_PATH=/var/lib/genesis
 ENV SECTOR_SIZE=8388608
+ENV LOTUS_FEVM_ENABLEETHRPC=true
 
 VOLUME /var/tmp/filecoin-proof-parameters
 VOLUME /var/lib/genesis

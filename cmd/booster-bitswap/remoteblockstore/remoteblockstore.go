@@ -7,11 +7,11 @@ import (
 	"strings"
 
 	"github.com/filecoin-project/boost/metrics"
-	"github.com/filecoin-project/boost/tracing"
-	blocks "github.com/ipfs/go-block-format"
+	"github.com/filecoin-project/boostd-data/shared/tracing"
 	"github.com/ipfs/go-cid"
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	format "github.com/ipfs/go-ipld-format"
+	"github.com/ipfs/go-libipfs/blocks"
 	logging "github.com/ipfs/go-log/v2"
 	"go.opencensus.io/stats"
 	"go.opentelemetry.io/otel/attribute"
@@ -47,12 +47,15 @@ func (ro *RemoteBlockstore) Get(ctx context.Context, c cid.Cid) (b blocks.Block,
 	log.Debugw("Get", "cid", c)
 	data, err := ro.api.BlockstoreGet(ctx, c)
 	err = normalizeError(err)
-	log.Debugw("Get response", "cid", c, "error", err)
+	log.Debugw("Get response", "cid", c, "size", len(data), "error", err)
 	if err != nil {
+		log.Infow("Get failed", "cid", c, "error", err)
 		stats.Record(ctx, metrics.BitswapRblsGetFailResponseCount.M(1))
 		return nil, err
 	}
+	log.Infow("Get", "cid", c, "size", len(data))
 	stats.Record(ctx, metrics.BitswapRblsGetSuccessResponseCount.M(1))
+	stats.Record(ctx, metrics.BitswapRblsBytesSentCount.M(int64(len(data))))
 	return blocks.NewBlockWithCid(data, c)
 }
 

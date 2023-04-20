@@ -43,6 +43,7 @@ type Boost struct {
 	Wallets            WalletsConfig
 	Graphql            GraphqlConfig
 	Tracing            TracingConfig
+	ContractDeals      ContractDealsConfig
 
 	// Lotus configs
 	LotusDealmaking lotus_config.DealmakingConfig
@@ -118,10 +119,10 @@ type LotusDealmakingConfig struct {
 	StartEpochSealingBuffer uint64
 
 	// A command used for fine-grained evaluation of storage deals
-	// see https://docs.filecoin.io/mine/lotus/miner-configuration/#using-filters-for-fine-grained-storage-and-retrieval-deal-acceptance for more details
+	// see https://boost.filecoin.io/configuration/deal-filters for more details
 	Filter string
 	// A command used for fine-grained evaluation of retrieval deals
-	// see https://docs.filecoin.io/mine/lotus/miner-configuration/#using-filters-for-fine-grained-storage-and-retrieval-deal-acceptance for more details
+	// see https://boost.filecoin.io/configuration/deal-filters for more details
 	RetrievalFilter string
 
 	RetrievalPricing *lotus_config.RetrievalPricing
@@ -174,20 +175,36 @@ type DealmakingConfig struct {
 	StartEpochSealingBuffer uint64
 	// The amount of time to keep deal proposal logs for before cleaning them up.
 	DealProposalLogDuration Duration
+	// The amount of time to keep retrieval deal logs for before cleaning them up.
+	// Note RetrievalLogDuration should exceed the StalledRetrievalTimeout as the
+	// logs db is leveraged for pruning stalled retrievals.
+	RetrievalLogDuration Duration
+	// The amount of time stalled retrieval deals will remain open before being canceled.
+	StalledRetrievalTimeout Duration
 
 	// A command used for fine-grained evaluation of storage deals
-	// see https://docs.filecoin.io/mine/lotus/miner-configuration/#using-filters-for-fine-grained-storage-and-retrieval-deal-acceptance for more details
+	// see https://boost.filecoin.io/configuration/deal-filters for more details
 	Filter string
 	// A command used for fine-grained evaluation of retrieval deals
-	// see https://docs.filecoin.io/mine/lotus/miner-configuration/#using-filters-for-fine-grained-storage-and-retrieval-deal-acceptance for more details
+	// see https://boost.filecoin.io/configuration/deal-filters for more details
 	RetrievalFilter string
 
 	RetrievalPricing *lotus_config.RetrievalPricing
+
+	// The maximum number of shards cached by the Dagstore for retrieval
+	// Lower this limit if boostd memory is too high during retrievals
+	BlockstoreCacheMaxShards int
+	// How long a blockstore shard should be cached before expiring without use
+	BlockstoreCacheExpiry Duration
+
+	// How long to cache calls to check whether a sector is unsealed
+	IsUnsealedCacheExpiry Duration
 
 	// The maximum amount of time a transfer can take before it fails
 	MaxTransferDuration Duration
 
 	// Whether to do commp on the Boost node (local) or on the Sealer (remote)
+	// Please note that this only works for v1.2.0 deals and not legacy deals
 	RemoteCommp bool
 	// The maximum number of commp processes to run in parallel on the local
 	// boost process
@@ -207,14 +224,52 @@ type DealmakingConfig struct {
 	// another concurrent download is allowed to start).
 	HttpTransferStallTimeout Duration
 
-	// The peed id used by booster-bitswap. To set, copy the value
-	// printed by running 'booster-bitswap init'. If this value is set,
-	// Boost will:
-	// - listen on bitswap protocols on its own peer id and forward them
-	// to booster bitswap
-	// - advertise bitswap records to the content indexer
-	// - list bitswap in available transports on the retrieval transport protocol
+	// The libp2p peer id used by booster-bitswap.
+	// Run 'booster-bitswap init' to get the peer id.
+	// When BitswapPeerID is not empty boostd will:
+	// - listen on bitswap protocols on boostd's own peer id and proxy
+	//   requests to booster-bitswap
+	// - advertise boostd's peer id in bitswap records to the content indexer
+	//   (bitswap clients connect to boostd, which proxies the requests to
+	//   booster-bitswap)
+	// - list bitswap as an available transport on the retrieval transport protocol
 	BitswapPeerID string
+
+	// Public multiaddresses for booster-bitswap.
+	// If empty
+	// - booster-bitswap is assumed to be running privately
+	// - boostd acts as a proxy: it listens on bitswap protocols on boostd's own
+	//   peer id and forwards them to booster-bitswap
+	// If public addresses are set
+	// - boostd announces the booster-bitswap peer id to the indexer as an
+	//   extended provider
+	// - clients make connections directly to the booster-bitswap process
+	//   (boostd does not act as a proxy)
+	BitswapPublicAddresses []string
+
+	// If operating in public mode, in order to announce booster-bitswap as an extended provider, this value must point to a
+	// a file containing the booster-bitswap peer id's private key. Can be left blank when operating with protocol proxy.
+	BitswapPrivKeyFile string
+
+	// The deal logs older than DealLogDurationDays are deleted from the logsDB
+	// to keep the size of logsDB in check. Set the value as "0" to disable log cleanup
+	DealLogDurationDays int
+
+	// The sealing pipeline status is cached by Boost if deal filters are enabled to avoid constant call to
+	// lotus-miner API. SealingPipelineCacheTimeout defines cache timeout value in seconds. Default is 30 seconds.
+	// Any value less than 0 will result in use of default
+	SealingPipelineCacheTimeout Duration
+}
+
+type ContractDealsConfig struct {
+	// Whether to enable chain monitoring in order to accept contract deals
+	Enabled bool
+
+	// Allowlist for contracts that this SP should accept deals from
+	AllowlistContracts []string
+
+	// From address for eth_ state call
+	From string
 }
 
 type FeeConfig struct {

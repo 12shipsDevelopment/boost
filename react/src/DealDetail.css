@@ -84,8 +84,16 @@
     padding: 0.5em 1em;
 }
 
-.since-last, .aux {
+.deal-detail .since-last, .aux {
     color: #999;
+}
+
+.deal-detail .contract {
+    background: url("./bootstrap-icons/icons/file-earmark-text.svg");
+    padding-left: 1.5em;
+    display: inline-block;
+    background-repeat: no-repeat;
+    background-position: left center;
 }
 
 .deal-detail .buttons {

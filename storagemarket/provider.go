@@ -15,15 +15,16 @@ import (
 	"github.com/filecoin-project/boost/db"
 	"github.com/filecoin-project/boost/db/migrations"
 	"github.com/filecoin-project/boost/fundmanager"
+	"github.com/filecoin-project/boost/markets/utils"
 	"github.com/filecoin-project/boost/node/modules/dtypes"
-	"github.com/filecoin-project/boost/sealingpipeline"
 	"github.com/filecoin-project/boost/storagemanager"
 	"github.com/filecoin-project/boost/storagemarket/logs"
+	"github.com/filecoin-project/boost/storagemarket/sealingpipeline"
 	"github.com/filecoin-project/boost/storagemarket/types"
 	smtypes "github.com/filecoin-project/boost/storagemarket/types"
 	"github.com/filecoin-project/boost/storagemarket/types/dealcheckpoints"
-	"github.com/filecoin-project/boost/tracing"
 	"github.com/filecoin-project/boost/transport"
+	"github.com/filecoin-project/boostd-data/shared/tracing"
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-fil-markets/piecestore"
 	"github.com/filecoin-project/go-fil-markets/shared"
@@ -32,7 +33,6 @@ import (
 	lapi "github.com/filecoin-project/lotus/api"
 	"github.com/filecoin-project/lotus/api/v1api"
 	ctypes "github.com/filecoin-project/lotus/chain/types"
-	"github.com/filecoin-project/lotus/markets/utils"
 	sealing "github.com/filecoin-project/lotus/storage/pipeline"
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
@@ -52,6 +52,12 @@ var (
 	addPieceRetryTimeout = 6 * time.Hour
 )
 
+type SealingPipelineCache struct {
+	Status     sealingpipeline.Status
+	CacheTime  time.Time
+	CacheError error
+}
+
 type Config struct {
 	// The maximum amount of time a transfer can take before it fails
 	MaxTransferDuration time.Duration
@@ -60,6 +66,11 @@ type Config struct {
 	// The number of commp processes that can run in parallel
 	MaxConcurrentLocalCommp uint64
 	TransferLimiter         TransferLimiterConfig
+	// Cleanup deal logs from DB older than this many number of days
+	DealLogDurationDays int
+	// Cache timeout for Sealing Pipeline status
+	SealingPipelineCacheTimeout time.Duration
+	StorageFilter               string
 }
 
 var log = logging.Logger("boost-provider")
@@ -84,7 +95,8 @@ type Provider struct {
 	storageSpaceChan     chan storageSpaceDealReq
 
 	// Sealing Pipeline API
-	sps sealingpipeline.API
+	sps      sealingpipeline.API
+	spsCache SealingPipelineCache
 
 	// Boost deal filter
 	df dtypes.StorageDealFilter
@@ -145,6 +157,10 @@ func NewProvider(cfg Config, sqldb *sql.DB, dealsDB *db.DealsDB, fundMgr *fundma
 		cfg.MaxConcurrentLocalCommp = 1
 	}
 
+	if cfg.SealingPipelineCacheTimeout < 0 {
+		cfg.SealingPipelineCacheTimeout = 30 * time.Second
+	}
+
 	return &Provider{
 		ctx:       ctx,
 		cancel:    cancel,
@@ -155,6 +171,7 @@ func NewProvider(cfg Config, sqldb *sql.DB, dealsDB *db.DealsDB, fundMgr *fundma
 		dealsDB:   dealsDB,
 		logsSqlDB: logsSqlDB,
 		sps:       sps,
+		spsCache:  SealingPipelineCache{},
 		df:        df,
 
 		acceptDealChan:       make(chan acceptDealReq),
@@ -260,7 +277,7 @@ func (p *Provider) ImportOfflineDealData(ctx context.Context, dealUuid uuid.UUID
 // ExecuteDeal is called when the Storage Provider receives a deal proposal
 // from the network
 func (p *Provider) ExecuteDeal(ctx context.Context, dp *types.DealParams, clientPeer peer.ID) (*api.ProviderDealRejectionInfo, error) {
-	ctx, span := tracing.Tracer.Start(ctx, "Provider.ExecuteDeal")
+	ctx, span := tracing.Tracer.Start(ctx, "Provider.ExecuteLibp2pDeal")
 	defer span.End()
 
 	span.SetAttributes(attribute.String("dealUuid", dp.DealUUID.String())) // Example of adding additional attributes
@@ -275,15 +292,21 @@ func (p *Provider) ExecuteDeal(ctx context.Context, dp *types.DealParams, client
 		Transfer:           dp.Transfer,
 		IsOffline:          dp.IsOffline,
 		Retry:              smtypes.DealRetryAuto,
+		FastRetrieval:      !dp.RemoveUnsealedCopy,
+		AnnounceToIPNI:     !dp.SkipIPNIAnnounce,
 	}
-	// validate the deal proposal
+
+	// Validate the deal proposal
 	if err := p.validateDealProposal(ds); err != nil {
+		// Send the client a reason for the rejection that doesn't reveal the
+		// internal error message
 		reason := err.reason
 		if reason == "" {
 			reason = err.Error()
 		}
-		p.dealLogger.Infow(dp.DealUUID, "deal proposal failed validation", "err", err.Error(), "reason", reason)
 
+		// Log the internal error message
+		p.dealLogger.Infow(dp.DealUUID, "deal proposal failed validation", "err", err.Error(), "reason", reason)
 		return &api.ProviderDealRejectionInfo{
 			Reason: fmt.Sprintf("failed validation: %s", reason),
 		}, nil
@@ -370,6 +393,12 @@ func (p *Provider) Start() error {
 		return fmt.Errorf("failed to migrate db: %w", err)
 	}
 
+	// De-fragment the logs DB
+	_, err = p.logsSqlDB.Exec("Vacuum")
+	if err != nil {
+		log.Errorf("failed to de-fragment the logs db: %w", err)
+	}
+
 	log.Infow("db: initialized")
 
 	// cleanup all completed deals in case Boost resumed before they were cleanedup
@@ -395,7 +424,7 @@ func (p *Provider) Start() error {
 
 	// cleanup all deals that have finished successfully
 	for _, deal := range activeDeals {
-		// Make sure that deals that have reached the index and announce stage
+		// Make sure that deals that have reached the IndexedAndAnnounced stage
 		// have their resources untagged
 		// TODO Update this once we start listening for expired/slashed deals etc
 		if deal.Checkpoint >= dealcheckpoints.IndexedAndAnnounced {
@@ -453,6 +482,11 @@ func (p *Provider) Start() error {
 
 	// Start the transfer limiter
 	go p.xferLimiter.run(p.ctx)
+
+	// Start hourly deal log cleanup
+	if p.config.DealLogDurationDays > 0 {
+		go p.dealLogger.LogCleanup(p.ctx, p.config.DealLogDurationDays)
+	}
 
 	log.Infow("storage provider: started")
 	return nil
@@ -579,10 +613,7 @@ func (p *Provider) AddPieceToSector(ctx context.Context, deal smtypes.ProviderDe
 			StartEpoch: deal.ClientDealProposal.Proposal.StartEpoch,
 			EndEpoch:   deal.ClientDealProposal.Proposal.EndEpoch,
 		},
-		// Assume that it doesn't make sense for a miner not to keep an
-		// unsealed copy. TODO: Check that's a valid assumption.
-		//KeepUnsealed: deal.FastRetrieval,
-		KeepUnsealed: true,
+		KeepUnsealed: deal.FastRetrieval,
 	}
 
 	// Attempt to add the piece to a sector (repeatedly if necessary)

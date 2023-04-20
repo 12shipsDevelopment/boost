@@ -17,6 +17,7 @@ import (
 	"github.com/filecoin-project/boost/node"
 	"github.com/filecoin-project/boost/node/config"
 	"github.com/filecoin-project/boost/node/modules/dtypes"
+	"github.com/filecoin-project/boost/node/repo"
 	"github.com/filecoin-project/boost/storagemarket"
 	"github.com/filecoin-project/boost/storagemarket/types"
 	"github.com/filecoin-project/boost/storagemarket/types/dealcheckpoints"
@@ -37,6 +38,7 @@ import (
 	"github.com/filecoin-project/lotus/chain/actors"
 	chaintypes "github.com/filecoin-project/lotus/chain/types"
 	ltypes "github.com/filecoin-project/lotus/chain/types"
+	"github.com/filecoin-project/lotus/gateway"
 	"github.com/filecoin-project/lotus/itests/kit"
 	lnode "github.com/filecoin-project/lotus/node"
 	lotus_config "github.com/filecoin-project/lotus/node/config"
@@ -45,13 +47,14 @@ import (
 	"github.com/filecoin-project/lotus/node/modules/lp2p"
 	lotus_repo "github.com/filecoin-project/lotus/node/repo"
 	"github.com/filecoin-project/lotus/storage/ctladdr"
-	"github.com/filecoin-project/lotus/storage/paths"
 	"github.com/filecoin-project/lotus/storage/pipeline/sealiface"
+	"github.com/filecoin-project/lotus/storage/sealer/storiface"
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
 	files "github.com/ipfs/go-ipfs-files"
 	ipld "github.com/ipfs/go-ipld-format"
+	"github.com/ipfs/go-libipfs/blocks"
 	logging "github.com/ipfs/go-log/v2"
 	dag "github.com/ipfs/go-merkledag"
 	dstest "github.com/ipfs/go-merkledag/test"
@@ -59,6 +62,7 @@ import (
 	"github.com/ipld/go-car"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/multiformats/go-multihash"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 )
@@ -179,9 +183,11 @@ func (f *TestFramework) Start() error {
 		wg.Done()
 	}()
 
-	// Create a wallet for publish storage deals with some funds
-	wg.Add(1)
+	// Create wallets for publish storage deals and deal collateral with
+	// some funds
+	wg.Add(2)
 	var psdWalletAddr address.Address
+	var dealCollatAddr address.Address
 	go func() {
 		Log.Info("Creating publish storage deals wallet")
 		psdWalletAddr, _ = fullnodeApi.WalletNew(f.ctx, chaintypes.KTBLS)
@@ -189,6 +195,15 @@ func (f *TestFramework) Start() error {
 		amt := abi.NewTokenAmount(1e18)
 		_ = sendFunds(f.ctx, fullnodeApi, psdWalletAddr, amt)
 		Log.Infof("Created publish storage deals wallet %s with %d attoFil", psdWalletAddr, amt)
+		wg.Done()
+	}()
+	go func() {
+		Log.Info("Creating deal collateral wallet")
+		dealCollatAddr, _ = fullnodeApi.WalletNew(f.ctx, chaintypes.KTBLS)
+
+		amt := abi.NewTokenAmount(1e18)
+		_ = sendFunds(f.ctx, fullnodeApi, dealCollatAddr, amt)
+		Log.Infof("Created deal collateral wallet %s with %d attoFil", dealCollatAddr, amt)
 		wg.Done()
 	}()
 	wg.Wait()
@@ -218,7 +233,7 @@ func (f *TestFramework) Start() error {
 	// Create an in-memory repo
 	r := lotus_repo.NewMemory(nil)
 
-	lr, err := r.Lock(node.Boost)
+	lr, err := r.Lock(repo.Boost)
 	if err != nil {
 		return err
 	}
@@ -226,7 +241,7 @@ func (f *TestFramework) Start() error {
 	// The in-memory repo implementation assumes that its being used to test
 	// a miner, which has storage configuration.
 	// Boost doesn't have storage configuration so clear the storage config.
-	if err := lr.SetStorage(func(sc *paths.StorageConfig) {
+	if err := lr.SetStorage(func(sc *storiface.StorageConfig) {
 		sc.StoragePaths = nil
 	}); err != nil {
 		return fmt.Errorf("set storage config: %w", err)
@@ -265,6 +280,7 @@ func (f *TestFramework) Start() error {
 	cfg.SealerApiInfo = apiInfo
 	cfg.Wallets.Miner = minerAddr.String()
 	cfg.Wallets.PublishStorageDeals = psdWalletAddr.String()
+	cfg.Wallets.DealCollateral = dealCollatAddr.String()
 	cfg.LotusDealmaking.MaxDealsPerPublishMsg = 1
 	cfg.LotusDealmaking.PublishMsgPeriod = lotus_config.Duration(0)
 	val, err := ltypes.ParseFIL("0.1 FIL")
@@ -300,6 +316,7 @@ func (f *TestFramework) Start() error {
 		node.Base(),
 		node.Repo(r),
 		node.Override(new(v1api.FullNode), fullnodeApi),
+		node.Override(new(*gateway.EthSubHandler), fullnodeApi.EthSubRouter),
 
 		node.Override(new(*ctladdr.AddressSelector), modules.AddressSelector(&lotus_config.MinerAddressConfig{
 			DealPublishControl: []string{
@@ -477,7 +494,12 @@ func (f *TestFramework) WaitForDealAddedToSector(dealUuid uuid.UUID) error {
 	}
 }
 
-func (f *TestFramework) MakeDummyDeal(dealUuid uuid.UUID, carFilepath string, rootCid cid.Cid, url string, isOffline bool) (*api.ProviderDealRejectionInfo, error) {
+type DealResult struct {
+	DealParams types.DealParams
+	Result     *api.ProviderDealRejectionInfo
+}
+
+func (f *TestFramework) MakeDummyDeal(dealUuid uuid.UUID, carFilepath string, rootCid cid.Cid, url string, isOffline bool) (*DealResult, error) {
 	cidAndSize, err := storagemarket.GenerateCommP(carFilepath)
 	if err != nil {
 		return nil, err
@@ -541,9 +563,15 @@ func (f *TestFramework) MakeDummyDeal(dealUuid uuid.UUID, carFilepath string, ro
 			Params: transferParamsJSON,
 			Size:   uint64(carFileinfo.Size()),
 		},
+		RemoveUnsealedCopy: false,
+		SkipIPNIAnnounce:   false,
 	}
 
-	return f.Client.StorageDeal(f.ctx, dealParams, peerID)
+	res, err := f.Client.StorageDeal(f.ctx, dealParams, peerID)
+	return &DealResult{
+		DealParams: dealParams,
+		Result:     res,
+	}, err
 }
 
 func (f *TestFramework) signProposal(addr address.Address, proposal *market.DealProposal) (*market.ClientDealProposal, error) {
@@ -667,6 +695,47 @@ func (f *TestFramework) Retrieve(ctx context.Context, t *testing.T, deal *cid.Ci
 	require.NoError(t, err)
 	require.NotEmpty(t, offers, "no offers")
 
+	return f.retrieve(ctx, t, offers[0], carExport)
+}
+
+func (f *TestFramework) ExtractFileFromCAR(ctx context.Context, t *testing.T, file *os.File) string {
+	bserv := dstest.Bserv()
+	ch, err := car.LoadCar(ctx, bserv.Blockstore(), file)
+	require.NoError(t, err)
+
+	var b blocks.Block
+	if ch.Roots[0].Prefix().MhType == multihash.IDENTITY {
+		mh, err := multihash.Decode(ch.Roots[0].Hash())
+		require.NoError(t, err)
+		b, err = blocks.NewBlockWithCid(mh.Digest, ch.Roots[0])
+		require.NoError(t, err)
+	} else {
+		b, err = bserv.GetBlock(ctx, ch.Roots[0])
+		require.NoError(t, err)
+	}
+
+	nd, err := ipld.Decode(b)
+	require.NoError(t, err)
+
+	dserv := dag.NewDAGService(bserv)
+	fil, err := unixfile.NewUnixfsFile(ctx, dserv, nd)
+	require.NoError(t, err)
+
+	tmpFile := path.Join(t.TempDir(), fmt.Sprintf("file-in-car-%d", rand.Uint32()))
+	err = files.WriteTo(fil, tmpFile)
+	require.NoError(t, err)
+
+	return tmpFile
+}
+
+func (f *TestFramework) RetrieveDirect(ctx context.Context, t *testing.T, root cid.Cid, pieceCid *cid.Cid, carExport bool) string {
+	offer, err := f.FullNode.ClientMinerQueryOffer(ctx, f.MinerAddr, root, pieceCid)
+	require.NoError(t, err)
+
+	return f.retrieve(ctx, t, offer, carExport)
+}
+
+func (f *TestFramework) retrieve(ctx context.Context, t *testing.T, offer lapi.QueryOffer, carExport bool) string {
 	p := path.Join(t.TempDir(), "ret-car-"+t.Name())
 	carFile, err := os.Create(p)
 	require.NoError(t, err)
@@ -680,7 +749,7 @@ func (f *TestFramework) Retrieve(ctx context.Context, t *testing.T, deal *cid.Ci
 	updates, err := f.FullNode.ClientGetRetrievalUpdates(updatesCtx)
 	require.NoError(t, err)
 
-	retrievalRes, err := f.FullNode.ClientRetrieve(ctx, offers[0].Order(caddr))
+	retrievalRes, err := f.FullNode.ClientRetrieve(ctx, offer.Order(caddr))
 	require.NoError(t, err)
 consumeEvents:
 	for {
@@ -708,7 +777,7 @@ consumeEvents:
 
 	require.NoError(t, f.FullNode.ClientExport(ctx,
 		lapi.ExportRef{
-			Root:   root,
+			Root:   offer.Root,
 			DealID: retrievalRes.DealID,
 		},
 		lapi.FileRef{
@@ -722,26 +791,4 @@ consumeEvents:
 	}
 
 	return ret
-}
-
-func (f *TestFramework) ExtractFileFromCAR(ctx context.Context, t *testing.T, file *os.File) string {
-	bserv := dstest.Bserv()
-	ch, err := car.LoadCar(ctx, bserv.Blockstore(), file)
-	require.NoError(t, err)
-
-	b, err := bserv.GetBlock(ctx, ch.Roots[0])
-	require.NoError(t, err)
-
-	nd, err := ipld.Decode(b)
-	require.NoError(t, err)
-
-	dserv := dag.NewDAGService(bserv)
-	fil, err := unixfile.NewUnixfsFile(ctx, dserv, nd)
-	require.NoError(t, err)
-
-	tmpFile := path.Join(t.TempDir(), fmt.Sprintf("file-in-car-%d", rand.Uint32()))
-	err = files.WriteTo(fil, tmpFile)
-	require.NoError(t, err)
-
-	return tmpFile
 }

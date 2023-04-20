@@ -6,7 +6,7 @@ import (
 
 	"github.com/filecoin-project/boost/node/config"
 	"github.com/filecoin-project/boost/node/modules/dtypes"
-	"github.com/filecoin-project/boost/storagemarket/types"
+	"github.com/filecoin-project/boost/storagemarket/dealfilter"
 	lotus_repo "github.com/filecoin-project/lotus/node/repo"
 )
 
@@ -28,7 +28,7 @@ func BasicDealFilter(cfg config.DealmakingConfig, userCmd dtypes.StorageDealFilt
 		startDelay dtypes.GetMaxDealStartDelayFunc,
 		r lotus_repo.LockedRepo,
 	) dtypes.StorageDealFilter {
-		return func(ctx context.Context, params types.DealFilterParams) (bool, string, error) {
+		return func(ctx context.Context, params dealfilter.DealFilterParams) (bool, string, error) {
 			deal := params.DealParams
 			pr := deal.ClientDealProposal.Proposal
 
@@ -38,7 +38,7 @@ func BasicDealFilter(cfg config.DealmakingConfig, userCmd dtypes.StorageDealFilt
 				return false, "miner error", err
 			}
 
-			if deal.Transfer.Type != "manual" && !b {
+			if !deal.IsOffline && !b {
 				log.Warnf("online storage deal consideration disabled; rejecting storage deal proposal from client: %s", deal.ClientDealProposal.Proposal.Client.String())
 				return false, "miner is not considering online storage deals", nil
 			}
@@ -49,7 +49,7 @@ func BasicDealFilter(cfg config.DealmakingConfig, userCmd dtypes.StorageDealFilt
 				return false, "miner error", err
 			}
 
-			if deal.Transfer.Type == "manual" && !b {
+			if deal.IsOffline && !b {
 				log.Warnf("offline storage deal consideration disabled; rejecting storage deal proposal from client: %s", deal.ClientDealProposal.Proposal.Client.String())
 				return false, "miner is not accepting offline storage deals", nil
 			}

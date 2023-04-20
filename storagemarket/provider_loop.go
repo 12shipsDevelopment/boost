@@ -10,7 +10,6 @@ import (
 	"github.com/filecoin-project/boost/api"
 	"github.com/filecoin-project/boost/db"
 	"github.com/filecoin-project/boost/fundmanager"
-	"github.com/filecoin-project/boost/sealingpipeline"
 	"github.com/filecoin-project/boost/storagemanager"
 	"github.com/filecoin-project/boost/storagemarket/types"
 	smtypes "github.com/filecoin-project/boost/storagemarket/types"
@@ -70,6 +69,35 @@ type acceptError struct {
 	reason string
 }
 
+// we still need to call the BasicDealFilter() even when external deal filter is not set.
+// Once BasicDealFilter() completes the checks like are we accepting online deal, verified deal etc.
+// Then it runs the external "cmd" filter. Thus, runDealFilters is not optional of any type of deal
+func (p *Provider) runDealFilters(deal *types.ProviderDealState) *acceptError {
+
+	// run custom storage deal filter decision logic
+	dealFilterParams, aerr := p.getDealFilterParams(deal)
+	if aerr != nil {
+		return aerr
+	}
+	accept, reason, err := p.df(p.ctx, *dealFilterParams)
+	if err != nil {
+		return &acceptError{
+			error:         fmt.Errorf("failed to invoke deal filter: %w", err),
+			reason:        "server error: deal filter error",
+			isSevereError: true,
+		}
+	}
+
+	if !accept {
+		return &acceptError{
+			error:         fmt.Errorf("deal filter rejected deal: %s", reason),
+			reason:        reason,
+			isSevereError: false,
+		}
+	}
+	return nil
+}
+
 func (p *Provider) processDealProposal(deal *types.ProviderDealState) *acceptError {
 	host, err := deal.Transfer.Host()
 	if err != nil {
@@ -90,43 +118,9 @@ func (p *Provider) processDealProposal(deal *types.ProviderDealState) *acceptErr
 		return aerr
 	}
 
-	// get current sealing pipeline status
-	status, err := sealingpipeline.GetStatus(p.ctx, p.fullnodeApi, p.sps)
-	if err != nil {
-		return &acceptError{
-			error:         fmt.Errorf("failed to fetch sealing pipeline status: %w", err),
-			reason:        "server error: get sealing status",
-			isSevereError: true,
-		}
-	}
-
-	// run custom decision logic by invoking the deal filter
-	// (the deal filter can be configured by the user)
-	params := types.DealParams{
-		DealUUID:           deal.DealUuid,
-		ClientDealProposal: deal.ClientDealProposal,
-		DealDataRoot:       deal.DealDataRoot,
-		Transfer:           deal.Transfer,
-	}
-
-	accept, reason, err := p.df(p.ctx, types.DealFilterParams{
-		DealParams:           &params,
-		SealingPipelineState: status})
-
-	if err != nil {
-		return &acceptError{
-			error:         fmt.Errorf("failed to invoke deal filter: %w", err),
-			reason:        "server error: deal filter error",
-			isSevereError: true,
-		}
-	}
-
-	if !accept {
-		return &acceptError{
-			error:         fmt.Errorf("deal filter rejected deal: %s", reason),
-			reason:        reason,
-			isSevereError: false,
-		}
+	// we still need to call runDealFilters() even when external deal filter is not set
+	if aerr := p.runDealFilters(deal); aerr != nil {
+		return aerr
 	}
 
 	cleanup := func() {
@@ -222,7 +216,7 @@ func (p *Provider) processDealProposal(deal *types.ProviderDealState) *acceptErr
 	return nil
 }
 
-// processOfflineDealProposal just saves the deal to the database.
+// processOfflineDealProposal just saves the deal to the database after running deal filters
 // Execution resumes when processImportOfflineDealData is called.
 func (p *Provider) processOfflineDealProposal(ds *smtypes.ProviderDealState, dh *dealHandler) *acceptError {
 	// Check that the deal proposal is unique
@@ -232,6 +226,11 @@ func (p *Provider) processOfflineDealProposal(ds *smtypes.ProviderDealState, dh 
 
 	// Check that the deal uuid is unique
 	if aerr := p.checkDealUuidUnique(ds); aerr != nil {
+		return aerr
+	}
+
+	// we still need to call runDealFilters() even when external deal filter is not set
+	if aerr := p.runDealFilters(ds); aerr != nil {
 		return aerr
 	}
 
