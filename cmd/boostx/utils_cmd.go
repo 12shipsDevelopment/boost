@@ -238,6 +238,11 @@ var commpCmd = &cli.Command{
 		fmt.Println("CommP CID: ", encoder.Encode(commp.PieceCID))
 		fmt.Println("Piece size: ", types.NewInt(uint64(commp.PieceSize.Unpadded().Padded())))
 		fmt.Println("Car file size: ", stat.Size())
+
+		fmt.Print("--commp=", encoder.Encode(commp.PieceCID))
+		fmt.Print(" --piece-size=", types.NewInt(uint64(commp.PieceSize.Unpadded().Padded())))
+		fmt.Println(" --car-size=", stat.Size())
+
 		return nil
 	},
 }
@@ -404,7 +409,9 @@ var generatecarCmd = &cli.Command{
 
 		encoder := cidenc.Encoder{Base: multibase.MustNewEncoder(multibase.Base32)}
 
-		fmt.Println("Payload CID: ", encoder.Encode(root))
+		fmt.Println("Payload CID:  ", encoder.Encode(root))
+
+		fmt.Println("--payload-cid=", encoder.Encode(root))
 
 		return nil
 	},

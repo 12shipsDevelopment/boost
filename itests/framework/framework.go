@@ -277,6 +277,7 @@ func (f *TestFramework) Start() error {
 		return fmt.Errorf("invalid config from repo, got: %T", c)
 	}
 	cfg.SectorIndexApiInfo = apiInfo
+	cfg.SectorIndexApiInfos = append(make([]string, 0), apiInfo)
 	cfg.SealerApiInfo = apiInfo
 	cfg.Wallets.Miner = minerAddr.String()
 	cfg.Wallets.PublishStorageDeals = psdWalletAddr.String()

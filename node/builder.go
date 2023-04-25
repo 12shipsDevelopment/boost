@@ -5,8 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/go-redis/redis/v8"
 	"time"
+
+	"github.com/go-redis/redis/v8"
 
 	"github.com/filecoin-project/boost/api"
 	"github.com/filecoin-project/boost/build"
@@ -492,6 +493,7 @@ func ConfigBoost(cfg *config.Boost) Option {
 
 		// Sector API
 		Override(new(sectorblocks.SectorBuilder), From(new(lotus_modules.MinerStorageService))),
+		Override(new(sectorblocks.AllSectorBuilders), lotus_modules.ConnectStorageServices(cfg.SectorIndexApiInfos)),
 
 		Override(new(*sectorblocks.SectorBlocks), sectorblocks.NewSectorBlocks),
 

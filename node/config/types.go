@@ -39,11 +39,13 @@ type Boost struct {
 	SealerApiInfo string
 	// The connect string for the sector index RPC API (lotus miner)
 	SectorIndexApiInfo string
-	Dealmaking         DealmakingConfig
-	Wallets            WalletsConfig
-	Graphql            GraphqlConfig
-	Tracing            TracingConfig
-	ContractDeals      ContractDealsConfig
+	// The connect strings for the sector indexes RPC API (lotus miner)
+	SectorIndexApiInfos []string
+	Dealmaking          DealmakingConfig
+	Wallets             WalletsConfig
+	Graphql             GraphqlConfig
+	Tracing             TracingConfig
+	ContractDeals       ContractDealsConfig
 
 	// Lotus configs
 	LotusDealmaking lotus_config.DealmakingConfig
