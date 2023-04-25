@@ -74,3 +74,18 @@ func ConnectStorageService(apiInfo string) func(mctx helpers.MetricsCtx, lc fx.L
 		return connectMinerService(apiInfo)(mctx, lc)
 	}
 }
+
+// ConnectStorageServices connect several miners
+func ConnectStorageServices(apiInfos []string) func(mctx helpers.MetricsCtx, lc fx.Lifecycle) (sectorblocks.AllSectorBuilders, error) {
+	return func(mctx helpers.MetricsCtx, lc fx.Lifecycle) (sectorblocks.AllSectorBuilders, error) {
+		log.Infof("Connecting storage services to miner: api infos=%s", apiInfos)
+		builders := sectorblocks.AllSectorBuilders{}
+		for _, apiInfo := range apiInfos {
+			sm, e := connectMinerService(apiInfo)(mctx, lc)
+			if e == nil {
+				builders.SectorBuilders = append(builders.SectorBuilders, sm)
+			}
+		}
+		return builders, nil
+	}
+}

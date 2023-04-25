@@ -493,8 +493,6 @@ func ConfigBoost(cfg *config.Boost) Option {
 
 		// Sector API
 		Override(new(sectorblocks.SectorBuilder), From(new(lotus_modules.MinerStorageService))),
-		Override(new(sectorblocks.AllSectorBuilders), lotus_modules.ConnectStorageServices(cfg.SectorIndexApiInfos)),
-
 		Override(new(*sectorblocks.SectorBlocks), sectorblocks.NewSectorBlocks),
 
 		// Sealing Pipeline State API
@@ -610,6 +608,7 @@ func ConfigBoost(cfg *config.Boost) Option {
 
 		Override(new(lotus_modules.MinerStorageService), lotus_modules.ConnectStorageService(cfg.SectorIndexApiInfo)),
 		Override(new(lotus_modules.MinerSealingService), lotus_modules.ConnectSealingService(cfg.SealerApiInfo)),
+		Override(new(sectorblocks.AllSectorBuilders), lotus_modules.ConnectStorageServices(cfg.SectorIndexApiInfos)),
 
 		Override(new(sealer.StorageAuth), lotus_modules.StorageAuthWithURL(cfg.SectorIndexApiInfo)),
 		Override(new(*backupmgr.BackupMgr), modules.NewOnlineBackupMgr(cfg)),
