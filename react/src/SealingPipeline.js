@@ -139,6 +139,7 @@ function SealingType(props) {
         states = props.states.SnapDeals
         errStates = props.states.SnapDealsError
     }
+    states = [...new Map(states.map((item) => [item, item])).values()];
     states = states.map(s => s).sort((a, b) => a.Order - b.Order)
     states = states.concat(errStates.map(s => s).sort((a, b) => a.Order - b.Order))
 

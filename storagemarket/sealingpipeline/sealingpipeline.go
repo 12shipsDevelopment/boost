@@ -22,32 +22,50 @@ type API interface {
 	SectorsListInStates(context.Context, []api.SectorState) ([]abi.SectorNumber, error)
 }
 
-func GetStatus(ctx context.Context, api API) (*Status, error) {
-	res, err := api.WorkerJobs(ctx)
-	if err != nil {
-		return nil, err
-	}
+type AllWorkers struct {
+	API
+	Workers []API
+}
 
-	var workers []*worker
-	for workerId, jobs := range res {
-		for _, j := range jobs {
-			workers = append(workers, &worker{
-				ID:     workerId.String(),
-				Start:  j.Start,
-				Stage:  j.Task.Short(),
-				Sector: int32(j.Sector.Number),
-			})
+func NewAllWorkers(workers []API, api API) *AllWorkers {
+	return &AllWorkers{
+		API:     api,
+		Workers: workers,
+	}
+}
+
+func GetStatus(ctx context.Context, wks *AllWorkers) (*Status, error) {
+	summaryAll := make(map[api.SectorState]int)
+	workersAll := make([]*worker, 0)
+	for _, wk := range wks.Workers {
+		res, err := wk.WorkerJobs(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		for workerId, jobs := range res {
+			for _, j := range jobs {
+				workersAll = append(workersAll, &worker{
+					ID:     workerId.String(),
+					Start:  j.Start,
+					Stage:  j.Task.Short(),
+					Sector: int32(j.Sector.Number),
+				})
+			}
+		}
+
+		summary, err := wk.SectorsSummary(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range summary {
+			summaryAll[k] = v
 		}
 	}
 
-	summary, err := api.SectorsSummary(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	st := &Status{
-		SectorStates: summary,
-		Workers:      workers,
+		SectorStates: summaryAll,
+		Workers:      workersAll,
 	}
 
 	return st, nil

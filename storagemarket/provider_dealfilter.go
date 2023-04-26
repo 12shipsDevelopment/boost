@@ -82,7 +82,7 @@ func (p *Provider) getDealFilterParams(deal *types.ProviderDealState) (*dealfilt
 func (p *Provider) sealingPipelineStatus() (sealingpipeline.Status, error) {
 
 	if time.Now().After(p.spsCache.CacheTime.Add(p.config.SealingPipelineCacheTimeout)) || p.spsCache.CacheError != nil {
-		sealingStatus, err := sealingpipeline.GetStatus(p.ctx, p.sps)
+		sealingStatus, err := sealingpipeline.GetStatus(p.ctx, p.wks)
 		if err != nil {
 			p.spsCache.CacheError = err
 			p.spsCache.CacheTime = time.Now()

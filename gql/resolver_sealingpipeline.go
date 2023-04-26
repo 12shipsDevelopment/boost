@@ -14,109 +14,118 @@ import (
 
 // query: sealingpipeline: [SealingPipeline]
 func (r *resolver) SealingPipeline(ctx context.Context) (*sealingPipelineState, error) {
-	res, err := r.spApi.WorkerJobs(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var workers []*worker
-	for workerId, jobs := range res {
-		for _, j := range jobs {
-			workers = append(workers, &worker{
-				ID:     workerId.String(),
-				Start:  graphql.Time{Time: j.Start},
-				Stage:  j.Task.Short(),
-				Sector: int32(j.Sector.Number),
-			})
-		}
-	}
-
-	summary, err := r.spApi.SectorsSummary(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	minerAddr, err := r.spApi.ActorAddress(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	ssize, err := getSectorSize(ctx, r.fullNode, minerAddr)
-	if err != nil {
-		return nil, err
-	}
-
-	wdSectors, err := r.spApi.SectorsListInStates(ctx, []api.SectorState{"WaitDeals"})
-	if err != nil {
-		return nil, err
-	}
-
-	sdwdSectors, err := r.spApi.SectorsListInStates(ctx, []api.SectorState{"SnapDealsWaitDeals"})
-	if err != nil {
-		return nil, err
-	}
-
-	waitDealsSectors, err := r.populateWaitDealsSectors(ctx, wdSectors, ssize)
-	if err != nil {
-		return nil, err
-	}
-	snapDealsWaitDealsSectors, err := r.populateWaitDealsSectors(ctx, sdwdSectors, ssize)
-	if err != nil {
-		return nil, err
-	}
-
+	waitDealsSectorsAll := make([]*waitDealSector, 0)
+	snapDealsWaitDealsSectorsAll := make([]*waitDealSector, 0)
+	workersAll := make([]*worker, 0)
 	var ss sectorStates
-	for order, state := range allSectorStates {
-		count, ok := summary[api.SectorState(state)]
-		if !ok {
-			continue
-		}
-		if count == 0 {
-			continue
+
+	for _, wk := range r.wks.Workers {
+		res, err := wk.WorkerJobs(ctx)
+		if err != nil {
+			return nil, err
 		}
 
-		if _, ok := normalSectors[state]; ok {
-			ss.Regular = append(ss.Regular, &sectorState{
-				Key:   state,
-				Value: int32(count),
-				Order: int32(order),
-			})
-			continue
+		for workerId, jobs := range res {
+			for _, j := range jobs {
+				workersAll = append(workersAll, &worker{
+					ID:     workerId.String(),
+					Start:  graphql.Time{Time: j.Start},
+					Stage:  j.Task.Short(),
+					Sector: int32(j.Sector.Number),
+				})
+			}
 		}
 
-		if _, ok := normalErredSectors[state]; ok {
-			ss.RegularError = append(ss.RegularError, &sectorState{
-				Key:   state,
-				Value: int32(count),
-				Order: int32(order),
-			})
-			continue
+		summary, err := r.spApi.SectorsSummary(ctx)
+		if err != nil {
+			return nil, err
 		}
 
-		if _, ok := snapdealsSectors[state]; ok {
-			ss.SnapDeals = append(ss.SnapDeals, &sectorState{
-				Key:   state,
-				Value: int32(count),
-				Order: int32(order),
-			})
-			continue
+		minerAddr, err := r.spApi.ActorAddress(ctx)
+		if err != nil {
+			return nil, err
 		}
 
-		if _, ok := snapdealsSectors[state]; ok {
-			ss.SnapDealsError = append(ss.SnapDealsError, &sectorState{
-				Key:   state,
-				Value: int32(count),
-				Order: int32(order),
-			})
-			continue
+		ssize, err := getSectorSize(ctx, r.fullNode, minerAddr)
+		if err != nil {
+			return nil, err
 		}
+
+		wdSectors, err := r.spApi.SectorsListInStates(ctx, []api.SectorState{"WaitDeals"})
+		if err != nil {
+			return nil, err
+		}
+
+		sdwdSectors, err := r.spApi.SectorsListInStates(ctx, []api.SectorState{"SnapDealsWaitDeals"})
+		if err != nil {
+			return nil, err
+		}
+
+		waitDealsSectors, err := r.populateWaitDealsSectors(ctx, wdSectors, ssize)
+		if err != nil {
+			return nil, err
+		}
+		waitDealsSectorsAll = append(waitDealsSectorsAll[:], waitDealsSectors[:]...)
+
+		snapDealsWaitDealsSectors, err := r.populateWaitDealsSectors(ctx, sdwdSectors, ssize)
+		if err != nil {
+			return nil, err
+		}
+		snapDealsWaitDealsSectorsAll = append(snapDealsWaitDealsSectorsAll[:], snapDealsWaitDealsSectors[:]...)
+
+		for order, state := range allSectorStates {
+			count, ok := summary[api.SectorState(state)]
+			if !ok {
+				continue
+			}
+			if count == 0 {
+				continue
+			}
+
+			if _, ok := normalSectors[state]; ok {
+				ss.Regular = append(ss.Regular, &sectorState{
+					Key:   state,
+					Value: int32(count),
+					Order: int32(order),
+				})
+				continue
+			}
+
+			if _, ok := normalErredSectors[state]; ok {
+				ss.RegularError = append(ss.RegularError, &sectorState{
+					Key:   state,
+					Value: int32(count),
+					Order: int32(order),
+				})
+				continue
+			}
+
+			if _, ok := snapdealsSectors[state]; ok {
+				ss.SnapDeals = append(ss.SnapDeals, &sectorState{
+					Key:   state,
+					Value: int32(count),
+					Order: int32(order),
+				})
+				continue
+			}
+
+			if _, ok := snapdealsSectors[state]; ok {
+				ss.SnapDealsError = append(ss.SnapDealsError, &sectorState{
+					Key:   state,
+					Value: int32(count),
+					Order: int32(order),
+				})
+				continue
+			}
+		}
+
 	}
 
 	return &sealingPipelineState{
-		WaitDealsSectors:          waitDealsSectors,
-		SnapDealsWaitDealsSectors: snapDealsWaitDealsSectors,
+		WaitDealsSectors:          waitDealsSectorsAll,
+		SnapDealsWaitDealsSectors: snapDealsWaitDealsSectorsAll,
 		SectorStates:              ss,
-		Workers:                   workers,
+		Workers:                   workersAll,
 	}, nil
 }
 

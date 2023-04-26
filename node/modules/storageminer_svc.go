@@ -76,6 +76,21 @@ func ConnectStorageService(apiInfo string) func(mctx helpers.MetricsCtx, lc fx.L
 }
 
 // ConnectStorageServices connect several miners
+func ConnectSealingServices(apiInfos []string) func(mctx helpers.MetricsCtx, lc fx.Lifecycle) (*sealingpipeline.AllWorkers, error) {
+	return func(mctx helpers.MetricsCtx, lc fx.Lifecycle) (*sealingpipeline.AllWorkers, error) {
+		log.Infof("Connecting sealing services to miner: api infos=%s", apiInfos)
+		allWorkers := &sealingpipeline.AllWorkers{}
+		for _, apiInfo := range apiInfos {
+			sm, e := connectMinerService(apiInfo)(mctx, lc)
+			if e == nil {
+				allWorkers.Workers = append(allWorkers.Workers, sm)
+			}
+		}
+		return allWorkers, nil
+	}
+}
+
+// ConnectStorageServices connect several miners
 func ConnectStorageServices(apiInfos []string) func(mctx helpers.MetricsCtx, lc fx.Lifecycle) (sectorblocks.AllSectorBuilders, error) {
 	return func(mctx helpers.MetricsCtx, lc fx.Lifecycle) (sectorblocks.AllSectorBuilders, error) {
 		log.Infof("Connecting storage services to miner: api infos=%s", apiInfos)

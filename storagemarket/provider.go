@@ -97,6 +97,7 @@ type Provider struct {
 	// Sealing Pipeline API
 	sps      sealingpipeline.API
 	spsCache SealingPipelineCache
+	wks      *sealingpipeline.AllWorkers
 
 	// Boost deal filter
 	df dtypes.StorageDealFilter
@@ -139,7 +140,7 @@ func NewProvider(cfg Config, sqldb *sql.DB, dealsDB *db.DealsDB, fundMgr *fundma
 	fullnodeApi v1api.FullNode, dp types.DealPublisher, addr address.Address, pa types.PieceAdder, commpCalc smtypes.CommpCalculator,
 	sps sealingpipeline.API, cm types.ChainDealManager, df dtypes.StorageDealFilter, logsSqlDB *sql.DB, logsDB *db.LogsDB,
 	dagst stores.DAGStoreWrapper, ps piecestore.PieceStore, ip types.IndexProvider, askGetter types.AskGetter,
-	sigVerifier types.SignatureVerifier, dl *logs.DealLogger, tspt transport.Transport) (*Provider, error) {
+	sigVerifier types.SignatureVerifier, dl *logs.DealLogger, tspt transport.Transport, wks *sealingpipeline.AllWorkers) (*Provider, error) {
 
 	xferLimiter, err := newTransferLimiter(cfg.TransferLimiter)
 	if err != nil {
@@ -171,6 +172,7 @@ func NewProvider(cfg Config, sqldb *sql.DB, dealsDB *db.DealsDB, fundMgr *fundma
 		dealsDB:   dealsDB,
 		logsSqlDB: logsSqlDB,
 		sps:       sps,
+		wks:       wks,
 		spsCache:  SealingPipelineCache{},
 		df:        df,
 
