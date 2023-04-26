@@ -17,8 +17,6 @@ func (r *resolver) SealingPipeline(ctx context.Context) (*sealingPipelineState, 
 	waitDealsSectorsAll := make([]*waitDealSector, 0)
 	snapDealsWaitDealsSectorsAll := make([]*waitDealSector, 0)
 	workersAll := make([]*worker, 0)
-	var ss sectorStates
-
 	for _, wk := range r.wks.Workers {
 		res, err := wk.WorkerJobs(ctx)
 		if err != nil {
@@ -36,12 +34,7 @@ func (r *resolver) SealingPipeline(ctx context.Context) (*sealingPipelineState, 
 			}
 		}
 
-		summary, err := r.spApi.SectorsSummary(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		minerAddr, err := r.spApi.ActorAddress(ctx)
+		minerAddr, err := wk.ActorAddress(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -51,12 +44,12 @@ func (r *resolver) SealingPipeline(ctx context.Context) (*sealingPipelineState, 
 			return nil, err
 		}
 
-		wdSectors, err := r.spApi.SectorsListInStates(ctx, []api.SectorState{"WaitDeals"})
+		wdSectors, err := wk.SectorsListInStates(ctx, []api.SectorState{"WaitDeals"})
 		if err != nil {
 			return nil, err
 		}
 
-		sdwdSectors, err := r.spApi.SectorsListInStates(ctx, []api.SectorState{"SnapDealsWaitDeals"})
+		sdwdSectors, err := wk.SectorsListInStates(ctx, []api.SectorState{"SnapDealsWaitDeals"})
 		if err != nil {
 			return nil, err
 		}
@@ -72,53 +65,58 @@ func (r *resolver) SealingPipeline(ctx context.Context) (*sealingPipelineState, 
 			return nil, err
 		}
 		snapDealsWaitDealsSectorsAll = append(snapDealsWaitDealsSectorsAll[:], snapDealsWaitDealsSectors[:]...)
+	}
 
-		for order, state := range allSectorStates {
-			count, ok := summary[api.SectorState(state)]
-			if !ok {
-				continue
-			}
-			if count == 0 {
-				continue
-			}
+	summary, err := r.spApi.SectorsSummary(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-			if _, ok := normalSectors[state]; ok {
-				ss.Regular = append(ss.Regular, &sectorState{
-					Key:   state,
-					Value: int32(count),
-					Order: int32(order),
-				})
-				continue
-			}
-
-			if _, ok := normalErredSectors[state]; ok {
-				ss.RegularError = append(ss.RegularError, &sectorState{
-					Key:   state,
-					Value: int32(count),
-					Order: int32(order),
-				})
-				continue
-			}
-
-			if _, ok := snapdealsSectors[state]; ok {
-				ss.SnapDeals = append(ss.SnapDeals, &sectorState{
-					Key:   state,
-					Value: int32(count),
-					Order: int32(order),
-				})
-				continue
-			}
-
-			if _, ok := snapdealsSectors[state]; ok {
-				ss.SnapDealsError = append(ss.SnapDealsError, &sectorState{
-					Key:   state,
-					Value: int32(count),
-					Order: int32(order),
-				})
-				continue
-			}
+	var ss sectorStates
+	for order, state := range allSectorStates {
+		count, ok := summary[api.SectorState(state)]
+		if !ok {
+			continue
+		}
+		if count == 0 {
+			continue
 		}
 
+		if _, ok := normalSectors[state]; ok {
+			ss.Regular = append(ss.Regular, &sectorState{
+				Key:   state,
+				Value: int32(count),
+				Order: int32(order),
+			})
+			continue
+		}
+
+		if _, ok := normalErredSectors[state]; ok {
+			ss.RegularError = append(ss.RegularError, &sectorState{
+				Key:   state,
+				Value: int32(count),
+				Order: int32(order),
+			})
+			continue
+		}
+
+		if _, ok := snapdealsSectors[state]; ok {
+			ss.SnapDeals = append(ss.SnapDeals, &sectorState{
+				Key:   state,
+				Value: int32(count),
+				Order: int32(order),
+			})
+			continue
+		}
+
+		if _, ok := snapdealsSectors[state]; ok {
+			ss.SnapDealsError = append(ss.SnapDealsError, &sectorState{
+				Key:   state,
+				Value: int32(count),
+				Order: int32(order),
+			})
+			continue
+		}
 	}
 
 	return &sealingPipelineState{
