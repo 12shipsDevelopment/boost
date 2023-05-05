@@ -239,9 +239,7 @@ var commpCmd = &cli.Command{
 		fmt.Println("Piece size: ", types.NewInt(uint64(commp.PieceSize.Unpadded().Padded())))
 		fmt.Println("Car file size: ", stat.Size())
 
-		fmt.Print("--commp=", encoder.Encode(commp.PieceCID))
-		fmt.Print(" --piece-size=", types.NewInt(uint64(commp.PieceSize.Unpadded().Padded())))
-		fmt.Println(" --car-size=", stat.Size())
+		fmt.Printf("--commp=%s --piece-size=%d --car-size=%d", encoder.Encode(commp.PieceCID), types.NewInt(uint64(commp.PieceSize.Unpadded().Padded())), stat.Size())
 
 		return nil
 	},
@@ -411,7 +409,7 @@ var generatecarCmd = &cli.Command{
 
 		fmt.Println("Payload CID:  ", encoder.Encode(root))
 
-		fmt.Println("--payload-cid=", encoder.Encode(root))
+		fmt.Printf("--payload-cid=%s", encoder.Encode(root))
 
 		return nil
 	},

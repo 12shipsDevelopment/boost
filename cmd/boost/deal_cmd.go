@@ -328,6 +328,8 @@ func dealCmdAction(cctx *cli.Context, isOnline bool) error {
 	msg += fmt.Sprintf("  provider collateral: %s\n", chain_types.FIL(dealProposal.Proposal.ProviderCollateral).Short())
 	fmt.Println(msg)
 
+	fmt.Printf("boostd import-data %s ", dealUuid)
+
 	return nil
 }
 
