@@ -50,6 +50,8 @@ func main() {
 			dagstoreCmd,
 			piecesCmd,
 			netCmd,
+			setEnvCmd,
+			getEnvCmd,
 		},
 	}
 	app.Setup()

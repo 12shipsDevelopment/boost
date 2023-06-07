@@ -160,7 +160,7 @@ var runCmd = &cli.Command{
 	},
 }
 
-var SetEnv = &cli.Command{
+var setEnvCmd = &cli.Command{
 	Name:  "set-env",
 	Usage: "Set environment variables",
 	Action: func(cctx *cli.Context) error {
@@ -186,7 +186,7 @@ var SetEnv = &cli.Command{
 	},
 }
 
-var GetEnv = &cli.Command{
+var getEnvCmd = &cli.Command{
 	Name:  "get-env",
 	Usage: "Get environment variables",
 	Action: func(cctx *cli.Context) error {
