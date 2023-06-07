@@ -101,8 +101,8 @@ type Boost interface {
 	// MethodGroup: Misc
 	OnlineBackup(context.Context, string) error //perm:admin
 
-	GetEnv(ctx context.Context, v string) (string, error)
-	SetEnv(ctx context.Context, v string, vv string) error
+	GetEnv(ctx context.Context, v string) (string, error)  //perm:admin
+	SetEnv(ctx context.Context, v string, vv string) error //perm:admin
 }
 
 // DagstoreShardInfo is the serialized form of dagstore.DagstoreShardInfo that

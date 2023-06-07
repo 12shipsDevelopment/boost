@@ -100,7 +100,7 @@ type BoostStruct struct {
 
 		DealsSetPieceCidBlocklist func(p0 context.Context, p1 []cid.Cid) error `perm:"admin"`
 
-		GetEnv func(p0 context.Context, p1 string) (string, error) ``
+		GetEnv func(p0 context.Context, p1 string) (string, error) `perm:"admin"`
 
 		MarketCancelDataTransfer func(p0 context.Context, p1 datatransfer.TransferID, p2 peer.ID, p3 bool) error `perm:"write"`
 
@@ -142,7 +142,7 @@ type BoostStruct struct {
 
 		SectorsRefs func(p0 context.Context) (map[string][]lapi.SealedRef, error) `perm:"read"`
 
-		SetEnv func(p0 context.Context, p1 string, p2 string) error ``
+		SetEnv func(p0 context.Context, p1 string, p2 string) error `perm:"admin"`
 	}
 }
 
