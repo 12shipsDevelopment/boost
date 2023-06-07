@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 
 	"github.com/filecoin-project/boost/node/impl/backupmgr"
@@ -516,4 +517,12 @@ func (sm *BoostAPI) BlockstoreGetSize(ctx context.Context, c cid.Cid) (int, erro
 
 func (sm *BoostAPI) OnlineBackup(ctx context.Context, dstDir string) error {
 	return sm.Bkp.Backup(ctx, dstDir)
+}
+
+func (a *BoostAPI) GetEnv(ctx context.Context, v string) (string, error) {
+	return os.Getenv(v), nil
+}
+
+func (a *BoostAPI) SetEnv(ctx context.Context, v string, vv string) error {
+	return os.Setenv(v, vv)
 }

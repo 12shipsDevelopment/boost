@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/filecoin-project/boost/api"
+	bcli "github.com/filecoin-project/boost/cli"
 	"github.com/filecoin-project/boost/node"
 	"github.com/filecoin-project/boost/node/modules/dtypes"
 
@@ -155,6 +156,54 @@ var runCmd = &cli.Command{
 		)
 
 		<-finishCh
+		return nil
+	},
+}
+
+var SetEnv = &cli.Command{
+	Name:  "set-env",
+	Usage: "Set environment variables",
+	Action: func(cctx *cli.Context) error {
+		if cctx.Args().Len() != 2 {
+			return fmt.Errorf("expected 2 argument")
+		}
+
+		napi, closer, err := bcli.GetBoostAPI(cctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		v := cctx.Args().First()
+		vv := cctx.Args().Get(1)
+		err = napi.SetEnv(cctx.Context, v, vv)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("set %s to %s succeed.\n", v, vv)
+
+		return nil
+	},
+}
+
+var GetEnv = &cli.Command{
+	Name:  "get-env",
+	Usage: "Get environment variables",
+	Action: func(cctx *cli.Context) error {
+		if cctx.Args().Len() != 1 {
+			return fmt.Errorf("expected 1 argument")
+		}
+		napi, closer, err := bcli.GetBoostAPI(cctx)
+		if err != nil {
+			return err
+		}
+		defer closer()
+
+		val, err := napi.GetEnv(cctx.Context, cctx.Args().First())
+		if err != nil {
+			return err
+		}
+		fmt.Println(val)
 		return nil
 	},
 }

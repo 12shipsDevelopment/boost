@@ -625,7 +625,7 @@ func (p *Provider) indexAndAnnounce(ctx context.Context, pub event.Emitter, deal
 	p.dealLogger.Infow(deal.DealUuid, "deal successfully added to piecestore")
 
 	// register with dagstore
-	err = stores.RegisterShardSync(ctx, p.dagst, pc, "", true)
+	err = stores.RegisterShardSync(ctx, p.dagst, pc, deal.InboundFilePath, true)
 
 	if err != nil {
 		if !errors.Is(err, dagstore.ErrShardExists) {

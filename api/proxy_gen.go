@@ -100,6 +100,8 @@ type BoostStruct struct {
 
 		DealsSetPieceCidBlocklist func(p0 context.Context, p1 []cid.Cid) error `perm:"admin"`
 
+		GetEnv func(p0 context.Context, p1 string) (string, error) ``
+
 		MarketCancelDataTransfer func(p0 context.Context, p1 datatransfer.TransferID, p2 peer.ID, p3 bool) error `perm:"write"`
 
 		MarketDataTransferUpdates func(p0 context.Context) (<-chan lapi.DataTransferChannel, error) `perm:"write"`
@@ -139,6 +141,8 @@ type BoostStruct struct {
 		RuntimeSubsystems func(p0 context.Context) (lapi.MinerSubsystems, error) `perm:"read"`
 
 		SectorsRefs func(p0 context.Context) (map[string][]lapi.SealedRef, error) `perm:"read"`
+
+		SetEnv func(p0 context.Context, p1 string, p2 string) error ``
 	}
 }
 
@@ -617,6 +621,17 @@ func (s *BoostStub) DealsSetPieceCidBlocklist(p0 context.Context, p1 []cid.Cid) 
 	return ErrNotSupported
 }
 
+func (s *BoostStruct) GetEnv(p0 context.Context, p1 string) (string, error) {
+	if s.Internal.GetEnv == nil {
+		return "", ErrNotSupported
+	}
+	return s.Internal.GetEnv(p0, p1)
+}
+
+func (s *BoostStub) GetEnv(p0 context.Context, p1 string) (string, error) {
+	return "", ErrNotSupported
+}
+
 func (s *BoostStruct) MarketCancelDataTransfer(p0 context.Context, p1 datatransfer.TransferID, p2 peer.ID, p3 bool) error {
 	if s.Internal.MarketCancelDataTransfer == nil {
 		return ErrNotSupported
@@ -835,6 +850,17 @@ func (s *BoostStruct) SectorsRefs(p0 context.Context) (map[string][]lapi.SealedR
 
 func (s *BoostStub) SectorsRefs(p0 context.Context) (map[string][]lapi.SealedRef, error) {
 	return *new(map[string][]lapi.SealedRef), ErrNotSupported
+}
+
+func (s *BoostStruct) SetEnv(p0 context.Context, p1 string, p2 string) error {
+	if s.Internal.SetEnv == nil {
+		return ErrNotSupported
+	}
+	return s.Internal.SetEnv(p0, p1, p2)
+}
+
+func (s *BoostStub) SetEnv(p0 context.Context, p1 string, p2 string) error {
+	return ErrNotSupported
 }
 
 func (s *ChainIOStruct) ChainHasObj(p0 context.Context, p1 cid.Cid) (bool, error) {
