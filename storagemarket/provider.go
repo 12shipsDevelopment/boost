@@ -615,6 +615,7 @@ func (p *Provider) AddPieceToSector(ctx context.Context, deal smtypes.ProviderDe
 			StartEpoch: deal.ClientDealProposal.Proposal.StartEpoch,
 			EndEpoch:   deal.ClientDealProposal.Proposal.EndEpoch,
 		},
+		// KeepUnsealed: deal.FastRetrieval,
 		KeepUnsealed: false,
 	}
 
