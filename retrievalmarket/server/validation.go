@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	datatransfer "github.com/filecoin-project/go-data-transfer"
 	"github.com/filecoin-project/go-fil-markets/piecestore"
 	"github.com/filecoin-project/go-fil-markets/retrievalmarket"
@@ -110,16 +111,16 @@ func (rv *requestValidator) acceptDeal(receiver peer.ID, proposal *retrievalmark
 	}
 
 	// Check if the piece is unsealed
-	_, isUnsealed, err := rv.getPiece(proposal.PayloadCID, proposal.PieceCID)
-	if err != nil {
-		if err == retrievalmarket.ErrNotFound {
-			return fmt.Errorf("there is no piece containing payload cid %s: %w", proposal.PayloadCID, err)
-		}
-		return err
-	}
-	if !isUnsealed {
-		return fmt.Errorf("there is no unsealed piece containing payload cid %s", proposal.PayloadCID)
-	}
+	// _, isUnsealed, err := rv.getPiece(proposal.PayloadCID, proposal.PieceCID)
+	// if err != nil {
+	// 	if err == retrievalmarket.ErrNotFound {
+	// 		return fmt.Errorf("there is no piece containing payload cid %s: %w", proposal.PayloadCID, err)
+	// 	}
+	// 	return err
+	// }
+	// if !isUnsealed {
+	// 	return fmt.Errorf("there is no unsealed piece containing payload cid %s", proposal.PayloadCID)
+	// }
 
 	// Check the retrieval ask price
 	ask := rv.AskStore.GetAsk()
