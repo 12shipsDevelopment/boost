@@ -111,16 +111,16 @@ func (rv *requestValidator) acceptDeal(receiver peer.ID, proposal *retrievalmark
 	}
 
 	// Check if the piece is unsealed
-	// _, isUnsealed, err := rv.getPiece(proposal.PayloadCID, proposal.PieceCID)
-	// if err != nil {
-	// 	if err == retrievalmarket.ErrNotFound {
-	// 		return fmt.Errorf("there is no piece containing payload cid %s: %w", proposal.PayloadCID, err)
-	// 	}
-	// 	return err
-	// }
-	// if !isUnsealed {
-	// 	return fmt.Errorf("there is no unsealed piece containing payload cid %s", proposal.PayloadCID)
-	// }
+	_, isUnsealed, err := rv.getPiece(proposal.PayloadCID, proposal.PieceCID)
+	if err != nil {
+		if err == retrievalmarket.ErrNotFound {
+			return fmt.Errorf("there is no piece containing payload cid %s: %w", proposal.PayloadCID, err)
+		}
+		return err
+	}
+	if !isUnsealed {
+		return fmt.Errorf("there is no unsealed piece containing payload cid %s", proposal.PayloadCID)
+	}
 
 	// Check the retrieval ask price
 	ask := rv.AskStore.GetAsk()
@@ -166,13 +166,19 @@ func (rv *requestValidator) getPiece(payloadCid cid.Cid, pieceCID *cid.Cid) (pie
 	}
 
 	pieces, piecesErr := GetAllPieceInfoForPayload(rv.DagStore, rv.PieceStore, payloadCid)
+	fmt.Println("6666666 10", pieces)
+
 	pieceInfo, isUnsealed := GetBestPieceInfoMatch(rv.ctx, rv.SectorAccessor, pieces, inPieceCid)
 	if pieceInfo.Defined() {
 		return pieceInfo, isUnsealed, nil
 	}
 	if piecesErr != nil {
+		fmt.Println("6666666 11")
+
 		return piecestore.PieceInfoUndefined, false, piecesErr
 	}
+	fmt.Println("6666666 12")
+
 	return piecestore.PieceInfoUndefined, false, fmt.Errorf("unknown pieceCID %s", pieceCID.String())
 }
 

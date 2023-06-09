@@ -138,13 +138,19 @@ func (s *ShardSelector) checkIsAvailable(sk shard.Key) (bool, error) {
 			unsealedDeals = append(unsealedDeals, di)
 		} else {
 			sslog.Debugw("sector is sealed", "shard", "sector", di.SectorID)
+			unsealedDeals = append(unsealedDeals, di)
 		}
+	}
+
+	if lastErr != nil {
+		return false, lastErr
 	}
 
 	if len(unsealedDeals) == 0 {
 		// It wasn't possible to find an unsealed sector
 		sslog.Debugw("no unsealed deals found", "shard", sk)
-		return false, lastErr
+		// return false, lastErr
+		sslog.Debugw("but it is in a secret location:)", "shard", sk)
 	}
 
 	// Check if the piece is available for free (zero-cost) retrieval

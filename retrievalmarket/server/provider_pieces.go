@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+
 	"github.com/filecoin-project/go-fil-markets/piecestore"
 	"github.com/filecoin-project/go-fil-markets/retrievalmarket"
 	"github.com/filecoin-project/go-fil-markets/stores"
@@ -59,6 +60,7 @@ func GetAllPieceInfoForPayload(dagStore stores.DAGStoreWrapper, pieceStore piece
 		}
 		pieces = append(pieces, pieceInfo)
 	}
+	fmt.Println("6666666 0")
 
 	return pieces, lastErr
 }
@@ -189,22 +191,33 @@ func PieceInUnsealedSector(ctx context.Context, sa retrievalmarket.SectorAccesso
 // Failure to find a matching piece will result in a piecestore.PieceInfoUndefined being returned.
 func GetBestPieceInfoMatch(ctx context.Context, sa retrievalmarket.SectorAccessor, pieces []piecestore.PieceInfo, clientPieceCID cid.Cid) (piecestore.PieceInfo, bool) {
 	sealedPieceInfo := -1
+	fmt.Println("6666666 1")
+
 	// For each piece that contains the target block
 	for ii, pieceInfo := range pieces {
 		if clientPieceCID.Defined() {
+			fmt.Println("6666666 2:", pieceInfo)
+			fmt.Println("6666666 2:", clientPieceCID)
+
 			// If client wants to retrieve the payload from a specific piece, just return that piece.
 			if pieceInfo.PieceCID.Equals(clientPieceCID) {
 				return pieceInfo, PieceInUnsealedSector(ctx, sa, pieceInfo)
 			}
 		} else {
+			fmt.Println("6666666 3")
+
 			// If client doesn't have a preference for a particular piece, prefer the first piece for
 			// which an unsealed sector exists.
 			if PieceInUnsealedSector(ctx, sa, pieceInfo) {
+				fmt.Println("6666666 4")
+
 				// The piece is in an unsealed sector, so just return it
 				return pieceInfo, true
 			}
 
 			if sealedPieceInfo == -1 {
+				fmt.Println("6666666 5")
+
 				// The piece is not in an unsealed sector, so save it but keep checking other pieces to see
 				// if there is one that is in an unsealed sector, otherwise use the first found sealed piece
 				sealedPieceInfo = ii
@@ -214,8 +227,9 @@ func GetBestPieceInfoMatch(ctx context.Context, sa retrievalmarket.SectorAccesso
 
 	// Found a piece containing the target block, piece is in a sealed sector
 	if sealedPieceInfo > -1 {
-		return pieces[sealedPieceInfo], false
+		fmt.Println("6666666 7 1")
+		return pieces[sealedPieceInfo], true
 	}
-
+	fmt.Println("6666666 6")
 	return piecestore.PieceInfoUndefined, false
 }
